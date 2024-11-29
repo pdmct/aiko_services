@@ -1,0 +1,26 @@
+(ns basilip.core
+  (:require [clojure.core :refer [proxy]]))
+(import [aiko_services :as aiko])
+
+(def AlohaHonua
+  (proxy aiko/Actor []
+          (__init__ [self context]
+                    (.__init__
+                     (.get_implementation context "Actor")
+                     self
+                     context)
+                    (println (str "MQTT topic: " (.topic_in self))))
+          (aloha [self name]
+                 (println (str "Aloha " name)))))
+   
+
+  
+
+
+(defn main [& args]
+  (let [init_args (aiko/actor_args "aloha_honua")
+        process (aiko/process_create)
+        _ (println (str AlohaHonua))]
+    (aiko/compose_instance AlohaHonua init_args)
+    (.run process)))
+  

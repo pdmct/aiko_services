@@ -1,0 +1,6 @@
+#kaocha/v1 
+{:tests [{:id :unit
+          :source-paths ["src"]
+          :ns-patterns ["aiko-services-clj.*"]
+          :test-paths ["test" "test/aiko_services_clj"]}]
+ :reporter [kaocha.report/dots]}

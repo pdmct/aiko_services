@@ -11,7 +11,8 @@
   :dependencies [[org.clojure/clojure "1.12.0"]
                  [metosin/malli "0.8.9"]
                  [org.clojure/core.async "1.6.681"]
-                 [org.clojure/tools.logging "1.3.0"]]
+                 [org.clojure/tools.logging "1.3.0"]
+                 [jarohen/nomad "0.9.0"]]
 
   :deploy-repositories [["clojars" {:url           "https://clojars.org/repo"
                                     :username      :env/clojars_user
@@ -26,6 +27,7 @@
    ;; slightly faster
    "-Xverify:none"]
   :target-path "target/%s"
+  
   :profiles {:dev {:jvm-opts ["-XX:+UnlockDiagnosticVMOptions"
                               "-XX:+DebugNonSafepoints"
                               "-Dclojure.tools.logging.factory=clojure.tools.logging.impl/slf4j-factory"]
@@ -38,6 +40,6 @@
                                   ;;[org.clojure/clojurescript "1.11.60"]
                                   [org.clojure/test.check "1.1.1"]
                                   [expectations/clojure-test "1.2.1"]
-                                  [lambdaisland/kaocha "1.69.1069"]
+                                  [lambdaisland/kaocha "1.91.1392"]
                                   [hashp "0.2.1"]
                                   [nubank/matcher-combinators "3.5.1"]]}})

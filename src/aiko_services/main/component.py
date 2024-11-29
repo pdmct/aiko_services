@@ -79,7 +79,8 @@ def compose_class(impl_seed_class, impl_overrides=None):
     implementations_loaded = _load_implementations(implementations)
 
     class FrankensteinClass(impl_seed_class):
-        pass
+        def __init__(self, context):
+            super.__init__(context)
 
     _add_methods(FrankensteinClass, implementations_loaded)
     setattr(FrankensteinClass, "__init__", impl_seed_class.__init__)
@@ -104,7 +105,7 @@ def compose_instance(impl_seed_class, init_args, impl_overrides=None):
 
     context = init_args["context"]
     context.set_implementations(implementations)
-    return frankenstein_class(**init_args)
+    return frankenstein_class(context)  # **init_args)
 
 def _add_methods(base_class, implementations):
     """
