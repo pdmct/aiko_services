@@ -30,9 +30,8 @@
 
 (defn set-connection-state
   "Sets the connection state."
-  {:pre [(fn [new-state]
-           (assert (connection-state-valid? new-state) "Invalid connection state"))]}
   [new-state]
+  {:pre [(connection-state-valid? new-state)]}
   (swap! connection-state
          (fn [state]
            (assoc state
@@ -40,9 +39,9 @@
 
 (defn add-connection-state-handler
   "Adds a connection state handler."
-  {:pre [(fn [handler]
-           (assert (fn? handler) "Handler must be a function"))]}
+  
   [handler]
+  {:pre [(fn? handler)]}
   (handler {:state @connection-state})
   (swap! connection-state
          (fn [state]
@@ -52,9 +51,8 @@
 
 (defn remove-connection-state-handler
   "Removes a connection state handler."
-  {:pre [(fn [handler]
-           (assert (fn? handler) "Handler must be a function"))]}
   [handler]
+  {:pre [(fn? handler)]}
   (swap! connection-state
          (fn [state]
            (assoc state
@@ -69,6 +67,7 @@
 (defn update-connection-state
   "Updates the connection state, calls all handlers with the new state."
   [new-state]
+  {:pre [(connection-state-valid? new-state)]}
   (set-connection-state new-state)
   (doseq [handler (:handlers @connection-state)]
     (handler new-state)))
