@@ -72,7 +72,7 @@
                               (subs s (+ (count prefix) prefix-val)))]
 
              (if rest
-               [first-part rest]
+               [first-part (split-fixed-length-strings [rest])]
                [first-part]))
              [s]))
        xs))
