@@ -6,11 +6,22 @@
   (:import [java.net Socket InetAddress]
            [java.lang System Exception ProcessHandle]))
 
-(def defaults {:AIKO_MQTT_HOST "localhost"
-               :AIKO_MQTT_PORT 1883
-               :AIKO_MQTT_TRANSPORT "tcp"
-               :AIKO_NAMESPACE "aiko"
-               :AIKO_BOOTSTRAP_UDP_PORT 4149})
+
+
+;; TODO: put into config.cljc
+(def _AIKO_BOOTSTRAP_UDP_PORT 4149) ;; Default port for bootstrapping
+(def _AIKO_MQTT_HOSTS [])          ;; List of host (name, port) to check for MQTT server
+(def _AIKO_MQTT_HOST "localhost")
+(def _AIKO_MQTT_PORT 1883)          ;;  TCP/IP: 9883, WebSockets: 9884
+(def _AIKO_MQTT_TRANSPORT "tcp")    ;; "websockets"
+(def _AIKO_NAMESPACE "aiko")
+
+
+(def defaults {:AIKO_MQTT_HOST _AIKO_MQTT_HOST
+               :AIKO_MQTT_PORT _AIKO_MQTT_PORT
+               :AIKO_MQTT_TRANSPORT _AIKO_MQTT_TRANSPORT
+               :AIKO_NAMESPACE _AIKO_NAMESPACE
+               :AIKO_BOOTSTRAP_UDP_PORT _AIKO_BOOTSTRAP_UDP_PORT})
 
 (n/set-defaults! {})
 
@@ -51,7 +62,7 @@
 
 (def _LOCALHOST_IP "127.0.0.1")
 
-(defn gethostname []
+(defn gethostname* []
   (.getHostName (InetAddress/getLocalHost)))
 
 (defn- get-lan-ip-address []
@@ -67,7 +78,7 @@
 ;; get the hostname of the machine
 (defn gethostname []
   (or (System/getenv "AIKO_HOSTNAME")
-      (gethostname)))
+      (gethostname*)))
 
 (defn- get-mqtt-port []
   (or (System/getenv "AIKO_MQTT_PORT")
@@ -96,11 +107,10 @@
 (def config (load-resource-file config-file))
 
 (defn get-config []
+  #_{:clj-kondo/ignore [:unresolved-var]}
   (n/get-config config))
 
 
 (defn get-mqtt-configuration []
   (get-in (get-config) [:mqtt]))
 
-
-(defn get-mqtt-hosts [])

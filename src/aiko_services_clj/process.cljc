@@ -2,25 +2,22 @@
   (:import [java.lang System]
            [java.lang.management ProcessHandle]
            [java.net InetAddress])
-  (:require [clojure.string :as str]
+  (:require [aiko-services-clj.utilities.config :as config]
+            [aiko-services-clj.utilities.connection :as connection]
             [aiko-services-clj.transport.mqtt :as MQTT :refer [MQTT Castaway]]
-            [clojure.tools.logging :as logging :refer [info warn error]]))
+            [clojure.tools.logging :as logging :refer [warn error]]))
 
 
-;; TODO: put into config.cljc
-(def _AIKO_BOOTSTRAP_UDP_PORT 4149) ;; Default port for bootstrapping
-(def _AIKO_MQTT_HOSTS [])          ;; List of host (name, port) to check for MQTT server
-(def _AIKO_MQTT_HOST "localhost")
-(def _AIKO_MQTT_PORT 1883)          ;;  TCP/IP: 9883, WebSockets: 9884
-(def _AIKO_MQTT_TRANSPORT "tcp")    ;; "websockets"
-(def _AIKO_NAMESPACE "aiko")
+
 
 
 (defn get-namespace []
-  (System/getenv "AIKO_NAMESPACE"  _AIKO_NAMESPACE))
+  (or (System/getenv "AIKO_NAMESPACE"  config/_AIKO_NAMESPACE)
+      (:AIKO_NAMESPACE config/defaults)))
 
 (defn get-hostname []
-  (.getCanonicalHostName (InetAddress/getLocalHost)))
+  (or (.getCanonicalHostName (InetAddress/getLocalHost))
+      (:AIKO_MQTT_HOST config/defaults)))
 
 (defn get-process-id []
   (.pid (ProcessHandle/current)))
@@ -74,9 +71,8 @@
     payload_lwt))
 
 ;; TODO: implement the connection --> connection.cljc
-(declare Connection)
 (defn create-connection []
-  (Connection.))
+  (connection/create-connection))
 
 (defn create-process-data []
   (let [process-data (ProcessData.)
