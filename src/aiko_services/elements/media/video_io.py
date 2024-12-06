@@ -74,8 +74,8 @@ try:
     _CV2_IMPORTED = True
 except ModuleNotFoundError:  # TODO: Optional warning flag
     diagnostic = "video_io.py: Couldn't import cv2 module"
-    print(f"WARNING: {diagnostic}")
-    _LOGGER.warning(diagnostic)
+#   print(f"WARNING: {diagnostic}")
+#   _LOGGER.warning(diagnostic)
 #   raise ModuleNotFoundError(
 #       'opencv-python package not installed.  '
 #       'Install aiko_services with --extras "opencv" '
@@ -86,9 +86,9 @@ try:
     import numpy as np
     _NUMPY_IMPORTED = True
 except ModuleNotFoundError:  # TODO: Optional warning flag
-    diagnostic = "image_io.py: Couldn't import numpy module"
-    print(f"WARNING: {diagnostic}")
-    _LOGGER.warning(diagnostic)
+    diagnostic = "video_io.py: Couldn't import numpy module"
+#   print(f"WARNING: {diagnostic}")
+#   _LOGGER.warning(diagnostic)
 
 # --------------------------------------------------------------------------- #
 # Useful for Pipeline output that should be all of the images processed
@@ -171,7 +171,7 @@ class VideoReadFile(DataSource):  # common_io.py PipelineElement
 
     def stop_stream(self, stream, stream_id):
         video_capture = stream.variables["video_capture"]
-        if video_capture.isOpened():
+        if video_capture and video_capture.isOpened():
             video_capture.release()
             stream.variables["video_capture"] = None
         return aiko.StreamEvent.OKAY, {}

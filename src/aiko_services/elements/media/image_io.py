@@ -22,6 +22,9 @@
 #
 # To Do
 # ~~~~~
+# - Consolidate multiple "media_pipeline_?.json" files into Graph Path(s) !
+# - ImageResize: {"scale": "1/3"} or {"scale": 2} or {"resolution": 640}
+#
 # - Refactor optional module import into common function (see video_io.py)
 # - Provide checks around "cv2" and "numpy" usage to be optional
 #
@@ -60,8 +63,8 @@ try:
     _CV2_IMPORTED = True
 except ModuleNotFoundError:  # TODO: Optional warning flag
     diagnostic = "image_io.py: Couldn't import cv2 module"
-    print(f"WARNING: {diagnostic}")
-    _LOGGER.warning(diagnostic)
+#   print(f"WARNING: {diagnostic}")
+#   _LOGGER.warning(diagnostic)
 #   raise ModuleNotFoundError(
 #       'opencv-python package not installed.  '
 #       'Install aiko_services with --extras "opencv" '
@@ -73,8 +76,8 @@ try:
     _NUMPY_IMPORTED = True
 except ModuleNotFoundError:  # TODO: Optional warning flag
     diagnostic = "image_io.py: Couldn't import numpy module"
-    print(f"WARNING: {diagnostic}")
-    _LOGGER.warning(diagnostic)
+#   print(f"WARNING: {diagnostic}")
+#   _LOGGER.warning(diagnostic)
 
 # --------------------------------------------------------------------------- #
 # Useful for Pipeline output that should be all of the images processed
