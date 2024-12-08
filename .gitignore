@@ -135,3 +135,11 @@ dmypy.json
 # pixi environments
 .pixi
 *.egg-info
+
+
+# clojure stuff
+.cpcache/*
+.nrepl-port
+kaocha
+.clj-kondo/
+.calva/
