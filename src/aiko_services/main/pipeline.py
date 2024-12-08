@@ -133,6 +133,8 @@ PROTOCOL_ELEMENT =  f"{ServiceProtocol.AIKO}/{ACTOR_TYPE_ELEMENT}:{_VERSION}"
 _GRACE_TIME = 60  # seconds
 _LOGGER = aiko.logger(__name__)
 
+_WINDOWS = False  # Stream windowing protocol for distributed function calls
+
 # --------------------------------------------------------------------------- #
 
 class DeployType(Enum):
@@ -194,14 +196,20 @@ class PipelineGraph(Graph):
     @classmethod
     def get_element(cls, node):
         element = node.element
-        if element.__class__.__name__ != "ServiceRemoteProxy":
-            name = element.__class__.__name__
-            local = element.is_local()
-            lifecycle = element.share["lifecycle"]
-        else:
+
+        if element.__class__.__name__ == "ServiceRemoteProxy":
+            lifecycle = "ready"  # element.get_lifecycle() ?
+            local = False        # element.is_local() ?
             name = node.name
-            local = False
-            lifecycle = "ready"
+        else:
+            lifecycle = element.share["lifecycle"]  # element.get_lifecycle() ?
+            local = element.is_local()
+
+            if element.__class__.__name__ == "PipelineRemote":
+                name = node.name
+            else:
+                name = element.__class__.__name__
+
         return element, name, local, lifecycle
 
 # TODO: Work-in-progress
@@ -246,7 +254,16 @@ class PipelineGraph(Graph):
         return valid_mappings
 
     def validate(self, pipeline_definition, head_node_name, strict=False):
-        for node in self.get_path(head_node_name):
+        node_unknown = None
+        try:
+            nodes = self.get_path(head_node_name)
+        except KeyError as key_error:
+            node_unknown = key_error
+        if node_unknown:
+            raise SystemExit(
+                f"PipelineDefinition PipelineElement unknown: {node_unknown}")
+
+        for node in nodes:
             element, element_name, _, _ = PipelineGraph.get_element(node)
             element_inputs = element.definition.input
             element_inputs = [{**item, "found": 0} for item in element_inputs]
@@ -338,12 +355,23 @@ class PipelineElementImpl(PipelineElement):
                 PROTOCOL_PIPELINE if self.is_pipeline else PROTOCOL_ELEMENT)
         context.get_implementation("Actor").__init__(self, context)
 
+    #  "log_level" parameter overrides "AIKO_LOG_LEVEL" environment variable
+        log_level, found = self.get_parameter(
+            "log_level", self_share_priority=False)
+        if found:
+            self.logger.setLevel(str(log_level).upper())
+
         self.share["source_file"] = f"v{_VERSION}⇒ {__file__}"
         self.share.update(self.definition.parameters)
     # TODO: Fix Aiko Dashboard / EC_Producer incorrectly updates this approach
     #   self.share["parameters"] = self.definition.parameters  # TODO
 
     def create_frame(self, stream, frame_data, frame_id=None):
+        if stream.stream_id not in self.pipeline.DEBUG:     # DEBUG: 2024-12-02
+            self.pipeline.DEBUG[stream.stream_id] = {}
+        self.pipeline.DEBUG[stream.stream_id]["create_frame"] = {
+            "time": local_iso_now(), "latest_frame_id": frame_id}
+
         frame_id = frame_id if frame_id else stream.frame_id
         stream_copy = Stream(stream.stream_id, frame_id,
             stream.parameters, stream.queue_response,
@@ -382,21 +410,33 @@ class PipelineElementImpl(PipelineElement):
                     self.name, stream_event, frame_data)
 
                 if stream.state == StreamState.RUN and frame_data:
-                # TODO: Check "isinstance(frame_data, dict)"
-                    self.create_frame(stream, frame_data, frame_id)
+                    if isinstance(frame_data, dict):
+                        frame_data = [frame_data]
+                    if isinstance(frame_data, list):
+                        for a_frame_data in frame_data:
+                            self.create_frame(stream, a_frame_data, frame_id)
+                            frame_id += 1
+                    else:
+                        self.logger.warning(
+                            "Frame generator must return either "
+                            "{frame_data} or [{frame_data}]")
+                else:
+                    frame_id += 1
+
                 if stream.state in [StreamState.DROP_FRAME, StreamState.RUN]:
                     stream.state = StreamState.RUN
                     if rate:
                         time.sleep(1.0 / rate)
-                    frame_id += 1
                     self.pipeline.thread_local.frame_id = frame_id
         finally:
             self.pipeline._disable_thread_local("_create_frames_generator")
 
-    def get_parameter(self, name, default=None, use_pipeline=True):
     # TODO: During process_frame(), stream parameters should be updated
-    #       in self.share, just like PipelineDefinition parameters.
+    #       in self.share[], just like PipelineDefinition parameters.
     #       Note: Consider the performance implications when doing this !
+
+    def get_parameter(self,
+        name, default=None, use_pipeline=True, self_share_priority=True):
 
         value = None
         found = False
@@ -408,9 +448,11 @@ class PipelineElementImpl(PipelineElement):
             value = stream_parameters[element_parameter_name]
             found = True
         elif name in self.definition.parameters:
-            if name in self.share:
+            if self_share_priority and name in self.share:
                 value = self.share[name]
-                found = True
+            else:
+                value = self.definition.parameters[name]
+            found = True
 
     # TODO: Should also allow Pipeline parameters to be updated
 
@@ -419,9 +461,12 @@ class PipelineElementImpl(PipelineElement):
                 value = stream_parameters[name]
                 found = True
             elif name in self.pipeline.definition.parameters:
-                if name in self.pipeline.share:
+                if self_share_priority and name in self.pipeline.share:
                     value = self.pipeline.share[name]
-                    found = True
+                else:
+                    value = self.pipeline.definition.parameters[name]
+                found = True
+
         if not found and default is not None:
             value = default  # Note: "found" is deliberately left as False
         return value, found
@@ -491,22 +536,32 @@ class PipelineImpl(Pipeline):
     DEPLOY_TYPE_REMOTE_NAME = PipelineElementDeployRemote.__name__
 
     def __init__(self, context):
+        self.DEBUG = {}                                     # DEBUG: 2024-12-02
+
+        self.actor = context.get_implementation("Actor")  # _WINDOWS
         context.get_implementation("PipelineElement").__init__(self, context)
         print(f"MQTT topic: {self.topic_in}")
 
         self.share["definition_pathname"] = context.definition_pathname
         self.share["lifecycle"] = "waiting"
         self.share["graph_path"] = context.graph_path
-        self.remote_pipelines = {}  # Service name --> PipelineElement name
+        self.remote_pipelines = {}  # Service name --> PipelineRemote instance
         self.services_cache = None
 
         self.stream_leases = {}
         self.thread_local = threading.local()  # See _enable_thread_local()
 
+    #  "log_level" parameter overrides "AIKO_LOG_LEVEL" environment variable
+        log_level, found = self.get_parameter(
+            "log_level", self_share_priority=False)
+        if found:
+            self.logger.setLevel(str(log_level).upper())
+
         self.pipeline_graph = self._create_pipeline_graph(context.definition)
         self.share["element_count"] = self.pipeline_graph.element_count
         self.share["streams"] = 0
         self.share["streams_frames"] = 0
+        self.share["sliding_windows"] = _WINDOWS
         self._update_lifecycle_state()
 
     # TODO: Better visualization of the Pipeline / PipelineElements details
@@ -517,6 +572,17 @@ class PipelineImpl(Pipeline):
                 print(f"    PipelineElement: {node.name}")
 
         event.add_timer_handler(self._status_update_timer, 3.0)
+
+    # Exists only for_WINDOWS option
+    def ec_producer_change_handler(self, command, item_name, item_value):
+        global _WINDOWS
+        self.actor.ec_producer_change_handler(
+            self, command, item_name, item_value)
+        if item_name == "sliding_windows":
+            try:
+                _WINDOWS = item_value.lower() == "true"
+            except ValueError:
+                pass
 
     def _update_lifecycle_state(self):
         pe_lifecycles = []
@@ -583,7 +649,7 @@ class PipelineImpl(Pipeline):
     @classmethod
     def create_pipeline(cls, definition_pathname, pipeline_definition,
         name, graph_path, stream_id, parameters, frame_id, frame_data,
-        grace_time, queue_response=None):
+        grace_time, queue_response=None, stream_reset=False):
 
         name = name if name else pipeline_definition.name
 
@@ -599,6 +665,9 @@ class PipelineImpl(Pipeline):
 
         if stream_id is not None:
             stream_dict["stream_id"] = stream_id
+            if stream_reset:
+                pipeline.destroy_stream(stream_id)
+
             pipeline.create_stream(stream_id, graph_path=None,
                 parameters=dict(parameters), grace_time=grace_time,
                 queue_response=queue_response, topic_response=None)
@@ -645,12 +714,25 @@ class PipelineImpl(Pipeline):
                     deploy_definition.module, class_name, header)
 
             # TODO: Is element_name is correct for remote case
-
             if deploy_type_name == PipelineImpl.DEPLOY_TYPE_REMOTE_NAME:
-                element_class = PipelineRemoteAbsent
+                element_class = PipelineRemote
+
+            if not element_class:
+                self._error_pipeline(header,
+                    f"PipelineDefinition: PipelineElement type unknown: "
+                    f"{deploy_type_name}")
+
+            init_args = pipeline_element_args(element_name,
+                definition=pipeline_element_definition, pipeline=self)
+            element_instance = compose_instance(element_class, init_args)
+            element_instance.parameters = pipeline_element_definition.parameters
+
+            if element_class == PipelineRemote:
                 service_name = deploy_definition.service_filter["name"]
                 if service_name not in self.remote_pipelines:
-                    self.remote_pipelines[service_name] = element_name
+                    topic_path = None  # uniquely identifies remote Pipeline
+                    self.remote_pipelines[service_name] = (
+                        element_name, element_instance, topic_path)
                 else:
                     self._error_pipeline(header,
                         f"PipelineDefinition: PipelineElement {element_name}: "
@@ -661,18 +743,6 @@ class PipelineImpl(Pipeline):
                     **deploy_definition.service_filter)
                 self.services_cache.add_handler(
                     self._pipeline_element_change_handler, service_filter)
-
-            if not element_class:
-                self._error_pipeline(header,
-                    f"PipelineDefinition: PipelineElement type unknown: "
-                    f"{deploy_type_name}")
-
-            init_args = pipeline_element_args(element_name,
-                definition=pipeline_element_definition,
-                pipeline=self
-            )
-            element_instance = compose_instance(element_class, init_args)
-            element_instance.parameters = pipeline_element_definition.parameters
 
             element = Node(
                 element_name, element_instance, node_successors[element_name])
@@ -692,14 +762,19 @@ class PipelineImpl(Pipeline):
                 f"Create stream: use either queue_response or topic_response")
             return False
 
+    # TODO: Proper solution for overall handling of remote Pipeline proxy
     # TODO: Implement limit on delayed post message
         if self.share["lifecycle"] != "ready":
             arguments = [stream_id, graph_path,
                 parameters, grace_time, queue_response, topic_response]
             self._post_message(
-                ActorTopic.IN, "create_stream", arguments, delay=1.0)
+                ActorTopic.IN, "create_stream", arguments, delay=3.0)
+            self.logger.warning(
+                f"Create stream: {stream_id}: invoked when remote "
+                 "Pipeline hasn't been discovered ... will retry")
             return False
 
+        stream_id = str(stream_id)
         if stream_id in self.stream_leases:
             self.logger.error(f"Create stream: {stream_id} already exists")
             return False
@@ -710,6 +785,11 @@ class PipelineImpl(Pipeline):
                 self.logger.error(
                     f"Create stream: Unknown Pipeline Graph Path: {graph_path}")
                 return False
+
+        if stream_id not in self.DEBUG:                     # DEBUG: 2024-12-02
+            self.DEBUG[stream_id] = {}
+        self.DEBUG[stream_id]["create_stream"] = {
+            "time": local_iso_now(), "stream_id": stream_id}
 
         self.logger.debug(f"Create stream: {self.name}<{stream_id}>")
         stream_lease = Lease(int(grace_time), stream_id,
@@ -743,15 +823,40 @@ class PipelineImpl(Pipeline):
                     stream_state = self._process_stream_event(
                         element_name, stream_event, diagnostic)
                 else:  ## Remote element ##
-                # TODO: Consider using "topic_response=self.topic_control"
-                    element.create_stream(
-                        stream_id, Graph.path_remote(stream.graph_path),
-                        parameters, grace_time, None, self.topic_in)
+                    # TODO: Consider using "topic_response=self.topic_control"
+                    if _WINDOWS:
+                        element.create_stream(
+                            stream_id, Graph.path_remote(stream.graph_path),
+                            parameters, grace_time, None, self.topic_in)
         finally:
             self._disable_thread_local("create_stream")
         return True
 
     def destroy_stream(self, stream_id, graceful=False, use_thread_local=True):
+        stream_id = str(stream_id)
+
+    # TODO: Proper solution for handling of remote Pipeline proxy
+    # TODO: Implement limit on delayed post message
+
+    ## Remote elements ##
+        if self.share["lifecycle"] == "ready":
+            graph_path = self.pipeline_graph.get_path(self.share["graph_path"])
+            for node in graph_path:
+                element, _, local, _ = PipelineGraph.get_element(node)
+                if not local:
+                    element.destroy_stream(stream_id, True)
+
+        else:
+            if _WINDOWS:
+                arguments = [stream_id, graceful, use_thread_local]
+                self._post_message(
+                    ActorTopic.IN, "destroy_stream", arguments, delay=3.0)
+                self.logger.warning(
+                    f"Destroy stream: {stream_id}: invoked when remote "
+                     "Pipeline hasn't been discovered ... will retry")
+                return False
+
+    ## Local elements ##
         if stream_id not in self.stream_leases:
             return False
 
@@ -767,6 +872,9 @@ class PipelineImpl(Pipeline):
                 return False
 
             self.logger.debug(f"Destroy stream: {self.name}<{stream_id}>")
+
+            if stream_id in self.DEBUG:                     # DEBUG: 2024-12-02
+                del self.DEBUG[stream_id]
 
             graph_path = self.pipeline_graph.get_path(self.share["graph_path"])
             for node in graph_path:
@@ -784,8 +892,6 @@ class PipelineImpl(Pipeline):
 
                     stream_state = self._process_stream_event(element_name,
                         stream_event, diagnostic, in_destroy_stream=True)
-                else:  ## Remote element ##
-                    element.destroy_stream(stream_id, True)
         finally:
             if use_thread_local:
                 self._disable_thread_local("destroy_stream")
@@ -909,39 +1015,49 @@ class PipelineImpl(Pipeline):
 
     def _pipeline_element_change_handler(self, command, service_details):
         if command in ["add", "remove"]:
-            print(f"Pipeline change: ({command}: {service_details[0:2]} ...)")
             topic_path = f"{service_details[0]}/in"
             service_name = service_details[1]
-            element_name = self.remote_pipelines[service_name]
+            element_name, element_instance, element_topic_path =  \
+                self.remote_pipelines[service_name]
             node = self.pipeline_graph.get_node(element_name)
             element_definition = node.element.definition
+            topic_path_match = False
 
-            if command == "add":
-                header = f"Error: Updating Pipeline: {element_definition.name}"
-            # TODO: Don't create another PipelineElement Service !
-            # TODO: Shouldn't need to load "element_definition.deploy.module"
-                element_class = self._load_element_class(
-                    element_definition.deploy.module, element_name, header)
+            if command == "add":     # use discovered remote proxy
+                topic_path_match = True
+                element_instance.set_remote_absent(False)
+                new_element_instance = get_actor_mqtt(
+                    topic_path, PipelineRemote)
+                new_element_instance.definition = element_definition
 
-            if command == "remove":
-                element_class = PipelineRemoteAbsent
+            if command == "remove":  # use original PipelineRemote instance
+                if topic_path == element_topic_path:
+                    topic_path_match = True
+                    topic_path = None
+                    element_instance.set_remote_absent(True)
+                    new_element_instance = element_instance
 
-            init_args = pipeline_element_args(element_name,
-                definition=element_definition,
-                pipeline=self
-            )
-            element_instance = compose_instance(element_class, init_args)
-            if command == "add":
-                element_instance = get_actor_mqtt(
-                    topic_path, PipelineRemoteFound)
-                element_instance.definition = element_definition
-            node._element = element_instance
+            if topic_path_match:
+                self.logger.debug(f"PipelineElement remote {element_name}: "
+                                  f"{command}: {service_details[0:2]}")
 
-            self._update_lifecycle_state()
-            print(f"Pipeline update: --> {element_name} proxy")
+                self.remote_pipelines[service_name] = (
+                    element_name, element_instance, topic_path)
+                node._element = new_element_instance
+                self._update_lifecycle_state()
 
     def process_frame(
         self, stream_dict, frame_data) -> Tuple[StreamEvent, dict]:
+
+        if self.share["lifecycle"] != "ready":
+            arguments = [stream_dict, frame_data]
+            self._post_message(
+                ActorTopic.IN, "process_frame", arguments, delay=3.0)
+            stream_id = stream_dict.get("stream_id", "*")
+            self.logger.warning(
+                f"Process frame: {stream_id}: invoked when remote "
+                 "Pipeline hasn't been discovered ... will retry")
+            return False
 
         return self._process_frame_common(stream_dict, frame_data, True)
 
@@ -953,6 +1069,7 @@ class PipelineImpl(Pipeline):
     def _process_frame_common(self, stream_dict, frame_data_in, new_frame)  \
         -> Tuple[StreamEvent, dict]:
 
+        frame_complete = True
         graph, stream =  \
             self._process_initialize(stream_dict, frame_data_in, new_frame)
         if graph is None:
@@ -961,12 +1078,32 @@ class PipelineImpl(Pipeline):
         try:
             self._enable_thread_local("process_frame", stream.stream_id)
             stream, _ = self.get_stream()
-            frame = stream.frames[stream.frame_id]
+            try:                                            # DEBUG: 2024-12-02
+                frame = stream.frames[stream.frame_id]
+            except KeyError:                                # DEBUG: 2024-12-02
+                self.logger.error(
+                    f"Stream <{stream.stream_id}>: "
+                    f"Frame id: <{stream.frame_id}> not found\n"
+                     "### Is a background thread in a PipelineElement "
+                     'changing "stream.frame_id" ?\n'
+                    f"### Purging Stream <{stream.stream_id}> in-flight frames")
+                details = self.DEBUG[stream.stream_id]["create_stream"]
+                self.logger.warning(f'##     {details["time"]}: create_stream(): stream_id: {details["stream_id"]}')
+
+                details = self.DEBUG[stream.stream_id]["frames_lru"]
+                self.logger.warning(f'##     Recent process frame_id(s): {details.get_list()}')
+
+                self.logger.warning(f"##     Cached frame_id(s): {list(stream.frames.keys())}")
+
+                details = self.DEBUG[stream.stream_id]["create_frame"]
+                self.logger.warning(f'##     {details["time"]}: create_frame(): Last generated frame_id: {details["latest_frame_id"]}')
+
+                stream.frames.clear()  # radically prevent memory leaks
+                return False
             metrics = self._process_metrics_initialize(frame)
 
             definition_pathname = self.share["definition_pathname"]
             element_name = None
-            frame_complete = True
             frame_data_out = {} if new_frame else frame_data_in
 
             for node in graph:
@@ -1005,15 +1142,24 @@ class PipelineImpl(Pipeline):
                             metrics, element.name, start_time)
                         frame.swag.update(frame_data_out)
                     else:  ## Remote element ##
-                        frame_complete = False
-                        frame_data_out = {}
-                        frame.paused_pe_name = node.name
-                        remote_stream = {
-                            "stream_id": stream.stream_id,
-                            "frame_id": stream.frame_id
-                        }
-                        element.process_frame(remote_stream, **inputs)
-                        break  # process_frame_response() --> continue graph
+                        if self.share["lifecycle"] != "ready":
+                            diagnostic = {
+                                "diagnostic": "process_frame() invoked when "
+                                     "remote Pipeline hasn't been discovered"
+                            }
+                            stream.state = self._process_stream_event(
+                                element_name, StreamEvent.ERROR, diagnostic)
+                        else:
+                            frame_complete = False
+                            frame_data_out = {}
+                            frame.paused_pe_name = node.name
+                            remote_stream = {
+                                "stream_id": stream.stream_id,
+                                "frame_id": stream.frame_id
+                            }
+                            element.process_frame(remote_stream, **inputs)
+                            # process_frame_response() --> continue graph
+                        break
                 except Exception as exception:
                     self._error_pipeline(header, traceback.format_exc())
 
@@ -1033,7 +1179,10 @@ class PipelineImpl(Pipeline):
                     aiko.message.publish(self.topic_out, payload)
 
         finally:
-            if frame_complete:
+        # If not _WINDOWS, then always remove the cached Stream Frame
+            if not _WINDOWS and stream.frame_id in stream.frames:
+                del stream.frames[stream.frame_id]
+            if frame_complete and stream.frame_id in stream.frames:
                 del stream.frames[stream.frame_id]
             self._disable_thread_local("process_frame")
         return True
@@ -1042,28 +1191,32 @@ class PipelineImpl(Pipeline):
         frame = None
         graph = None
         stream = Stream()
-        header = f"Process frame <{stream.stream_id}:{stream.frame_id}>"
+        header = f"Process frame <{stream.stream_id}:{stream.frame_id}>:"
         if not stream.update(stream_dict):
-            self.logger.warning(f"{header}: stream_dict must be a dictionary")
+            self.logger.warning(f"{header} stream_dict must be a dictionary")
             return None, None
 
         if frame_data_in == []:
             frame_data_in = {}
         if not isinstance(frame_data_in, dict):
-            self.logger.warning(f"{header}: frame data must be a dictionary")
+            self.logger.warning(f"{header} frame data must be a dictionary")
             return None, None
 
+    # If not _WINDOWS, then always automatically create a new Stream
         stream_id = stream.stream_id
-        if stream_id == DEFAULT_STREAM_ID:
-            if DEFAULT_STREAM_ID not in self.stream_leases:
-                self.create_stream(
-                    DEFAULT_STREAM_ID, graph_path=stream.graph_path,
+        new_stream_id = DEFAULT_STREAM_ID if _WINDOWS else stream_id
+        if stream_id == new_stream_id:
+            if new_stream_id not in self.stream_leases:
+                status = self.create_stream(
+                    new_stream_id, graph_path=stream.graph_path,
                     parameters=stream.parameters)
+                if status == False:
+                    return None, None
 
         frame_id = stream.frame_id
+        header = f"Process frame <{stream_id}:{frame_id}>:"
         if stream_id not in self.stream_leases:
-            self.logger.warning(
-                f"Process frame <{stream_id}:{frame_id}>: stream not found")
+            self.logger.warning(f"{header} stream not found")
         else:
             stream_lease = self.stream_leases[stream_id]
             stream_lease.extend()
@@ -1071,17 +1224,31 @@ class PipelineImpl(Pipeline):
                 {"frame_id": frame_id, "state": stream.state})
             stream = stream_lease.stream
 
+    # If not _WINDOWS, then always automatically create a new Frame
             if new_frame:
-                stream.frames[frame_id] = Frame()
-                frame = stream.frames[frame_id]
-                graph = self.pipeline_graph.get_path(stream.graph_path)
+                if _WINDOWS and frame_id in stream.frames:
+                    self.logger.warning(f"{header} new frame id already exists")
+                else:
+                    if stream_id not in self.DEBUG:         # DEBUG: 2024-12-02
+                        self.DEBUG[stream_id] = {}
+                    if "frames_lru" not in self.DEBUG[stream_id]:
+                        self.DEBUG[stream_id]["frames_lru"] = LRUCache(size=8)
+                    self.DEBUG[stream_id]["frames_lru"].put(frame_id,
+                        {"time": local_iso_now(), "frame_id": frame_id}
+                    )
+
+                    stream.frames[frame_id] = Frame()
+                    frame = stream.frames[frame_id]
+                    graph = self.pipeline_graph.get_path(stream.graph_path)
+    # If not _WINDOWS, then don't support "process_frame_response()"
+            elif not _WINDOWS:
+                return None, None
             elif frame_id in stream.frames:
                 frame = stream.frames[frame_id]
                 graph = self.pipeline_graph.iterate_after(
                     frame.paused_pe_name, stream.graph_path)
             else:
-                self.logger.warning(
-                    f"Process frame <{stream_id}:{frame_id}> frame not paused")
+                self.logger.warning(f"{header} paused frame id doesn't exist")
 
         if frame:
             frame.swag.update(frame_data_in)  # SWAG: Stuff We All Get 😅
@@ -1204,20 +1371,23 @@ class PipelineImpl(Pipeline):
         for parameter in parameters:
             self.set_parameter(stream_id, parameter[0], parameter[1])
 
-class PipelineRemoteAbsent(PipelineElement):
+class PipelineRemote(PipelineElement):
     def __init__(self, context):
         context.get_implementation("PipelineElement").__init__(self, context)
-        self.share["lifecycle"] = "absent"
+        self.set_remote_absent(True)
 
     def create_stream(self, stream_id, graph_path=None,
         parameters=None, grace_time=_GRACE_TIME,
         queue_response=None, topic_response=None):
 
-        self.log_error("create_stream")
-        return False
+        if self.absent:
+            self.log_error("create_stream")
+        return not self.absent
 
     def destroy_stream(self, stream_id, graceful=False):
-        self.log_error("destroy_stream")
+        if self.absent:
+            self.log_error("destroy_stream")
+        return not self.absent
 
     @classmethod
     def is_local(cls):
@@ -1226,28 +1396,16 @@ class PipelineRemoteAbsent(PipelineElement):
     def log_error(self, function_name):
         self.logger.error(f"PipelineElement.{function_name}(): "
                           f"{self.definition.name}: invoked when "
-                           "remote Pipeline Actor hasn't been discovered")
+                           "remote Pipeline hasn't been discovered")
 
     def process_frame(self, stream, **kwargs) -> Tuple[StreamEvent, dict]:
-        self.log_error("process_frame")
-        return False
+        if self.absent:
+            self.log_error("process_frame")
+        return not self.absent
 
-class PipelineRemoteFound(PipelineElement):
-    def __init__(self, context):
-        context.get_implementation("PipelineElement").__init__(self, context)
-        self.share["lifecycle"] = "ready"
-
-    def create_stream(self, stream_id, graph_path=None,
-        parameters=None, grace_time=_GRACE_TIME,
-        queue_response=None, topic_response=None):
-        pass
-
-    def destroy_stream(self, stream_id, graceful=False):
-        pass
-
-    @classmethod
-    def is_local(cls):
-        return False
+    def set_remote_absent(self, absent):
+        self.absent = absent
+        self.share["lifecycle"] = "absent" if self.absent else "ready"
 
 # --------------------------------------------------------------------------- #
 
@@ -1382,44 +1540,58 @@ def main():
 @click.argument("definition_pathname", nargs=1, type=str)
 @click.option("--name", "-n", type=str,
     default=None, required=False,
-    help="Pipeline Actor name")
+    help="Pipeline name")
 @click.option("--graph_path", "-gp", type=str,
     default=None, required=False,
     help="Pipeline Graph Path, use Head_PipelineElement_name")
 @click.option("--parameters", "-p", type=click.Tuple((str, str)),
     default=None, multiple=True, required=False,
     help="Define Stream parameters")
+@click.option("--stream_reset", "-r", is_flag=True,
+    help="Reset the remote Stream by invoking destroy_stream() first")
 @click.option("--stream_id", "-s", type=str,
     default=None, required=False,
-    help="Create Stream with identifier")
+    help='Create Stream with identifier with optional process_id "name_{}"')
 @click.option("--stream_parameters", "-sp", type=click.Tuple((str, str)),
     default=None, multiple=True, required=False,
     help="Define Stream parameters")
+@click.option("--grace_time", "-gt", type=int,
+    default=_GRACE_TIME, required=False,
+    help="Stream receive frame time-out duration")
+@click.option("--show_response", "-sr", is_flag=True,
+    help="Show pipeline output response (output)")
 @click.option("--frame_id", "-fi", type=int,
     default=0, required=False,
     help="Process Frame with identifier")
 @click.option("--frame_data", "-fd", type=str,
     default=None, required=False,
     help="Process Frame with data")
-@click.option("--grace_time", "-gt", type=int,
-    default=_GRACE_TIME, required=False,
-    help="Stream receive frame time-out duration")
-@click.option("--show_response", "-sr", is_flag=True,
-    help="Show pipeline output response (output)")
 @click.option("--log_level", "-ll", type=str,
     default="INFO", required=False,
     help="error, warning, info, debug")
 @click.option("--log_mqtt", "-lm", type=str,
     default="all", required=False,
     help="all, false (console), true (mqtt)")
+@click.option("--windows", "-w", is_flag=True,
+    help="Enable experimental distributed Streams sliding window protocol")
+@click.option("--exit_message", is_flag=True,
+    help="Display exit warning message")
 
 def create(definition_pathname, graph_path, name, parameters, stream_id,
     stream_parameters,  # DEPRECATED
-    frame_id, frame_data, grace_time, show_response, log_level, log_mqtt):
+    frame_id, frame_data, grace_time, show_response,
+    log_level, log_mqtt, stream_reset, windows, exit_message):
+
+    global _WINDOWS
+    if windows:
+        _WINDOWS = True
+
+    if stream_id:
+        stream_id = stream_id.replace("{}", get_pid())  # sort-of unique id
 
     if stream_parameters:
-        _LOGGER.warning('"--stream_parameters" replaced by "--parameters"')
         parameters = stream_parameters
+        _LOGGER.warning('"--stream_parameters" replaced by "--parameters"')
 
     os.environ["AIKO_LOG_LEVEL"] = log_level.upper()
     os.environ["AIKO_LOG_MQTT"] = log_mqtt
@@ -1447,9 +1619,12 @@ def create(definition_pathname, graph_path, name, parameters, stream_id,
     pipeline = PipelineImpl.create_pipeline(
         definition_pathname, pipeline_definition,
         name, graph_path, stream_id, parameters, frame_id, frame_data,
-        grace_time, queue_response=queue_pipeline_response)
+        grace_time, queue_response=queue_pipeline_response,
+        stream_reset=stream_reset)
 
     pipeline.run(mqtt_connection_required=False)
+    if exit_message:
+        _LOGGER.warning("Pipeline process exit")
 
 @main.command(help="Destroy Pipeline")
 @click.argument("name", nargs=1, type=str, required=True)

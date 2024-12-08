@@ -67,7 +67,7 @@ class PE_Add(aiko.PipelineElement):
 
 class PE_Inspect(aiko.PipelineElement):
     def __init__(self, context):
-        context.set_protocol("metrics:0")
+        context.set_protocol("inspect:0")
         context.get_implementation("PipelineElement").__init__(self, context)
 
     def _get_inspect_file(self, stream, target):
@@ -166,7 +166,14 @@ class PE_RandomIntegers(aiko.PipelineElement):
     def frame_generator(self, stream, frame_id):
         limit, _ = self.get_parameter("limit")
         if frame_id < int(limit):
-            return aiko.StreamEvent.OKAY, {"random": random.randint(0, 9)}
+            frame_data = {"random": random.randint(0, 9)}
+
+        # Create several frames at once
+        #   frame_data = []
+        #   for _ in range(3):
+        #       frame_data.append({"random": random.randint(0, 9)})
+
+            return aiko.StreamEvent.OKAY, frame_data
         else:
             return aiko.StreamEvent.STOP, {"diagnostic": "Frame limit reached"}
 
