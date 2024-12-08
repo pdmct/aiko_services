@@ -34,9 +34,6 @@
   (every? (fn [[k v]] (= v (get tags k))) required_tags))
 
 
-(defprotocol IServiceProtocolInterface
-  (default []))
-
 (defprotocol IService
   (add-message-handler [this message_handler topic binary=False])
   (remove-message-handler [this message_handler topic])
@@ -79,7 +76,7 @@
 
 
 (defn service []
-  (Service.))
+  (new Service (System/currentTimeMillis) "service" nil nil nil nil nil nil))
 
 
 
