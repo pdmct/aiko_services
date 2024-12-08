@@ -150,6 +150,73 @@ The `PipelineElementImpl` class provides a concrete implementation with features
 
 ## Internal Components
 
+### PipelineGraph Class
+The `PipelineGraph` class is responsible for managing the relationships between pipeline elements in a directed graph structure. It encapsulates the logic for adding elements, validating inputs, and traversing the graph.
+
+#### Key Methods
+- `__init__(head_nodes=None)`: Initializes the graph with optional head nodes.
+  - **Parameters:**
+    - `head_nodes`: A list of nodes that serve as entry points to the graph.
+  - **Description:** Sets up the internal graph representation and prepares it for pipeline operations.
+
+- `add_element(element)`: Adds a pipeline element to the graph.
+  - **Parameters:**
+    - `element`: The pipeline element to be added.
+  - **Description:** Integrates the element into the graph and initializes its predecessors as an empty `OrderedDict`.
+
+- `element_count`: Returns the total number of elements in the graph.
+  - **Description:** A property that calculates the size of the graph dynamically.
+
+- `get_element(node)`: Retrieves information about a specific node in the graph.
+  - **Parameters:**
+    - `node`: The graph node to inspect.
+  - **Returns:**
+    - `element`: The pipeline element associated with the node.
+    - `name`: The name of the element.
+    - `local`: Boolean indicating if the element is local.
+    - `lifecycle`: The lifecycle state of the element.
+  - **Description:** Provides details about the pipeline element, including its type and lifecycle status.
+
+- `validate_inputs(inputs, predecessors, checked=None, strict=False)`: Validates the inputs to a pipeline element.
+  - **Parameters:**
+    - `inputs`: List of expected inputs for the element.
+    - `predecessors`: Predecessor nodes in the graph.
+    - `checked`: A list of already validated predecessors.
+    - `strict`: Whether to enforce strict validation.
+  - **Returns:**
+    - Updated `inputs` and `checked` lists.
+  - **Description:** Ensures that all inputs are correctly provided by predecessors.
+
+- `validate_mapping(map_in_nodes, element_name, input)`: Validates input-output mappings for a pipeline element.
+  - **Parameters:**
+    - `map_in_nodes`: Mapping definitions for input nodes.
+    - `element_name`: The name of the element being validated.
+    - `input`: The input to validate.
+  - **Returns:**
+    - A list of valid mappings.
+  - **Description:** Checks if the input mappings are consistent with the graph definition.
+
+- `validate(pipeline_definition, head_node_name, strict=False)`: Validates the entire pipeline graph against its definition.
+  - **Parameters:**
+    - `pipeline_definition`: The pipeline definition to validate against.
+    - `head_node_name`: The starting node of the validation process.
+    - `strict`: Whether to enforce strict validation rules.
+  - **Description:** Ensures the graph adheres to its definition and that all elements are connected and correctly configured.
+
+- `get_path(head_node_name)`: Retrieves the path of nodes starting from a specific head node.
+  - **Parameters:**
+    - `head_node_name`: The name of the head node.
+  - **Returns:**
+    - A list of nodes forming the path.
+  - **Description:** Useful for traversing the graph and analyzing its structure.
+
+- `iterate_after(node_name, graph_path)`: Iterates over the graph nodes after a specified node.
+  - **Parameters:**
+    - `node_name`: The node to start iterating from.
+    - `graph_path`: The path to iterate along.
+  - **Description:** Facilitates partial traversal of the graph.
+
+
 ### Pipeline Classes
 - **Pipeline:** Base class for managing pipeline operations.
 - **PipelineImpl:** Concrete implementation with dynamic graph management.
