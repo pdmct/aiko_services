@@ -393,10 +393,20 @@ class PipelineElementImpl(PipelineElement):
     def _create_frames_generator(self, stream, frame_generator, frame_id, rate):
         try:
             self.pipeline._enable_thread_local(
-                "_create_frames_generator", stream.stream_id, frame_id)
+                "_create_frames_generator()", stream.stream_id, frame_id)
             stream, frame_id = self.get_stream()
 
+        # TODO: 2024-12-11: Throttle "frame_generator" when "rate" is None
+            mailbox_name = f"{self.pipeline.name}/1/in"
+            mailbox_queue = event.mailboxes[mailbox_name].queue
+
             while stream.state == StreamState.RUN:
+            # TODO: 2024-12-11: Throttle "frame_generator" when "rate" is None
+                if (not rate or rate == 0) and mailbox_queue.qsize() >= 32:
+                    time.sleep(0.02)  # 50 Hz check
+                    continue
+
+                stream.lock.acquire("_create_frames_generator()")
                 try:
                     stream_event, frame_data = frame_generator(stream, frame_id)
                 except Exception as exception:
@@ -406,8 +416,8 @@ class PipelineElementImpl(PipelineElement):
                     stream_event = StreamEvent.ERROR
                     frame_data = {"diagnostic": traceback.format_exc()}
 
-                stream.state = self.pipeline._process_stream_event(
-                    self.name, stream_event, frame_data)
+                stream.set_state(self.pipeline._process_stream_event(
+                    self.name, stream_event, frame_data))
 
                 if stream.state == StreamState.RUN and frame_data:
                     if isinstance(frame_data, dict):
@@ -422,14 +432,16 @@ class PipelineElementImpl(PipelineElement):
                             "{frame_data} or [{frame_data}]")
                 else:
                     frame_id += 1
+                self.pipeline.thread_local.frame_id = frame_id
 
                 if stream.state in [StreamState.DROP_FRAME, StreamState.RUN]:
-                    stream.state = StreamState.RUN
-                    if rate:
-                        time.sleep(1.0 / rate)
-                    self.pipeline.thread_local.frame_id = frame_id
+                    stream.set_state(StreamState.RUN)
+                stream.lock.release()
+
+                if rate and stream.state == StreamState.RUN:
+                    time.sleep(1.0 / rate)
         finally:
-            self.pipeline._disable_thread_local("_create_frames_generator")
+            self.pipeline._disable_thread_local("_create_frames_generator()")
 
     # TODO: During process_frame(), stream parameters should be updated
     #       in self.share[], just like PipelineDefinition parameters.
@@ -618,10 +630,10 @@ class PipelineImpl(Pipeline):
 #
 # Always use ...
 #     try:
-#         self._enable_thread_local("function_name", stream_id, frame_id)
+#         self._enable_thread_local("function_name()", stream_id, frame_id)
 #         stream, frame_id = self.get_stream()
 #     finally:
-#         self._disable_thread_local("function_name")
+#         self._disable_thread_local("function_name()")
 
     def _enable_thread_local(self, function_name, stream_id, frame_id=None):
         stream = getattr(self.thread_local, "stream", None)
@@ -803,8 +815,9 @@ class PipelineImpl(Pipeline):
         self.stream_leases[stream_id] = stream_lease
 
         try:
-            self._enable_thread_local("create_stream", stream_id)
+            self._enable_thread_local("create_stream()", stream_id)
             stream, _ = self.get_stream()
+            stream.lock.acquire("create_stream()")
 
             graph_path = self.pipeline_graph.get_path(self.share["graph_path"])
             for node in graph_path:
@@ -820,8 +833,8 @@ class PipelineImpl(Pipeline):
                         stream_event = StreamEvent.ERROR
                         diagnostic = {"diagnostic": traceback.format_exc()}
 
-                    stream_state = self._process_stream_event(
-                        element_name, stream_event, diagnostic)
+                    stream.set_state(self._process_stream_event(
+                        element_name, stream_event, diagnostic))
                 else:  ## Remote element ##
                     # TODO: Consider using "topic_response=self.topic_control"
                     if _WINDOWS:
@@ -829,7 +842,8 @@ class PipelineImpl(Pipeline):
                             stream_id, Graph.path_remote(stream.graph_path),
                             parameters, grace_time, None, self.topic_in)
         finally:
-            self._disable_thread_local("create_stream")
+            stream.lock.release()
+            self._disable_thread_local("create_stream()")
         return True
 
     def destroy_stream(self, stream_id, graceful=False, use_thread_local=True):
@@ -862,8 +876,9 @@ class PipelineImpl(Pipeline):
 
         try:
             if use_thread_local:
-                self._enable_thread_local("destroy_stream", stream_id)
+                self._enable_thread_local("destroy_stream()", stream_id)
             stream, _ = self.get_stream()
+            stream.lock.acquire("destroy_stream()")
 
             if graceful and len(stream.frames):
                 arguments = [stream_id, graceful, use_thread_local]
@@ -890,11 +905,12 @@ class PipelineImpl(Pipeline):
                         stream_event = StreamEvent.ERROR
                         diagnostic = {"diagnostic": traceback.format_exc()}
 
-                    stream_state = self._process_stream_event(element_name,
-                        stream_event, diagnostic, in_destroy_stream=True)
+                    stream.set_state(self._process_stream_event(element_name,
+                        stream_event, diagnostic, in_destroy_stream=True))
         finally:
             if use_thread_local:
-                self._disable_thread_local("destroy_stream")
+                stream.lock.release()
+                self._disable_thread_local("destroy_stream()")
 
         stream_lease = self.stream_leases[stream_id]
         del self.stream_leases[stream_id]
@@ -943,7 +959,7 @@ class PipelineImpl(Pipeline):
         try:
             pipeline_definition_dict = json.load(
                 open(pipeline_definition_pathname, "r"))
-            PIPELINE_DEFINITION_SCHEMA.validate(pipeline_definition_dict)
+            PipelineDefinitionSchema.validate(pipeline_definition_dict)
         except ValueError as value_error:
             PipelineImpl._exit(header, value_error)
 
@@ -957,7 +973,7 @@ class PipelineImpl(Pipeline):
         except TypeError as type_error:
             PipelineImpl._exit(header, type_error)
 
-        if pipeline_definition.version != PIPELINE_DEFINITION_VERSION:
+        if pipeline_definition.version != PipelineDefinitionSchema.version:
             PipelineImpl._exit(header,
                 f"PipelineDefinition: Version must be 0, "
                 f"but is {pipeline_definition.version}")
@@ -1076,8 +1092,9 @@ class PipelineImpl(Pipeline):
             return False
 
         try:
-            self._enable_thread_local("process_frame", stream.stream_id)
+            self._enable_thread_local("process_frame()", stream.stream_id)
             stream, _ = self.get_stream()
+            stream.lock.acquire("process_frame()")
             try:                                            # DEBUG: 2024-12-02
                 frame = stream.frames[stream.frame_id]
             except KeyError:                                # DEBUG: 2024-12-02
@@ -1134,8 +1151,8 @@ class PipelineImpl(Pipeline):
                             frame_data_out = {
                                 "diagnostic": traceback.format_exc()}
 
-                        stream.state = self._process_stream_event(
-                            element_name, stream_event, frame_data_out)
+                        stream.set_state(self._process_stream_event(
+                            element_name, stream_event, frame_data_out))
                     #   TODO: Test "stream.state" before continuing
                         self._process_map_out(element_name, frame_data_out)
                         self._process_metrics_capture(  # TODO: Move up ?
@@ -1147,8 +1164,8 @@ class PipelineImpl(Pipeline):
                                 "diagnostic": "process_frame() invoked when "
                                      "remote Pipeline hasn't been discovered"
                             }
-                            stream.state = self._process_stream_event(
-                                element_name, StreamEvent.ERROR, diagnostic)
+                            stream.set_state(self._process_stream_event(
+                                element_name, StreamEvent.ERROR, diagnostic))
                         else:
                             frame_complete = False
                             frame_data_out = {}
@@ -1184,7 +1201,8 @@ class PipelineImpl(Pipeline):
                 del stream.frames[stream.frame_id]
             if frame_complete and stream.frame_id in stream.frames:
                 del stream.frames[stream.frame_id]
-            self._disable_thread_local("process_frame")
+            stream.lock.release()
+            self._disable_thread_local("process_frame()")
         return True
 
     def _process_initialize(self, stream_dict, frame_data_in, new_frame):
@@ -1408,10 +1426,9 @@ class PipelineRemote(PipelineElement):
         self.share["lifecycle"] = "absent" if self.absent else "ready"
 
 # --------------------------------------------------------------------------- #
+# Deliberately define schema in-line, rather than in a separate file
 
-try:
-    PIPELINE_DEFINITION_VERSION = 0
-    PIPELINE_DEFINITION_SCHEMA = avro.schema.parse("""
+PIPELINE_DEFINITION_SCHEMA = """
 {
   "namespace": "aiko_services",
   "name":      "pipeline_definition",
@@ -1522,11 +1539,25 @@ try:
     }
   ]
 }
-    """)
-except avro.errors.SchemaParseException as schema_parse_exception:
-    PipelineImpl._exit(
-        "Error: Parsing aiko_services/pipeline.py: PIPELINE_DEFINITION_SCHEMA",
-        schema_parse_exception)
+"""
+
+class PipelineDefinitionSchema:
+    avro_schema = None
+    version = 0
+
+    def validate(pipeline_definition_dict):
+        if not PipelineDefinitionSchema.avro_schema:
+            try:
+                PipelineDefinitionSchema.avro_schema = avro.schema.parse(
+                    PIPELINE_DEFINITION_SCHEMA)
+            except avro.errors.SchemaParseException as schema_parse_exception:
+                PipelineImpl._exit(
+                    "Error: Parsing aiko_services/pipeline.py: "
+                    "PipelineDefinitionSchema",
+                    schema_parse_exception)
+
+        return PipelineDefinitionSchema.avro_schema.validate(
+                    pipeline_definition_dict)
 
 # --------------------------------------------------------------------------- #
 
