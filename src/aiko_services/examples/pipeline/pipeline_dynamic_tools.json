@@ -1,0 +1,194 @@
+{
+  "#": "Pipeline Graph demonstrating multiple paths for dynamic selection of tools",
+  "version": 0,
+  "name": "p_dyna_tools",
+  "runtime": "python",
+  "#": "Graph consists of one or more paths, an initial path, a set of tools and a final path",
+  "graph": [
+    "(PE_IN_0 PE_SELECT)",
+    "(PE_TOOL_0)",
+    "(PE_TOOL_1)",
+    "(PE_TOOL_2)",
+    "(PE_OUT_0 PE_Inspect PE_Metrics)"
+  ],
+  "elements": [
+    {
+      "name": "PE_IN_0",
+      "input": [
+        {
+          "name": "in_a",
+          "type": "string"
+        }
+      ],
+      "output": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "class_name": "PE_IN",
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_SELECT",
+      "parameters": {
+        "next_step": "PE_OUT_0"
+      },
+      "input": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "output": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_TOOL_0",
+      "parameters": {
+        "#": "Tool flag to indicate this is a tool element",
+        "tool": true
+      },
+      "input": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "output": [
+        {
+          "name": "out_c",
+          "type": "string"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "class_name": "PE_TOOL",
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_TOOL_1",
+      "parameters": {
+        "#": "Tool flag to indicate this is a tool element",
+        "tool": true
+      },
+      "input": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "output": [
+        {
+          "name": "out_c",
+          "type": "string"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "class_name": "PE_TOOL",
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_TOOL_2",
+      "parameters": {
+        "#": "Tool flag to indicate this is a tool element",
+        "tool": true
+      },
+      "input": [
+        {
+          "name": "text_b",
+          "type": "string"
+        }
+      ],
+      "output": [
+        {
+          "name": "out_c",
+          "type": "string"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "class_name": "PE_TOOL",
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_OUT_0",
+      "input": [
+        {
+          "name": "text_b",
+          "type": "string"
+        },
+        {
+          "name": "out_c",
+          "type": "string"
+        }
+      ],
+      "output": [],
+      "deploy": {
+        "local": {
+          "class_name": "PE_DYNAMIC_OUT",
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_Inspect",
+      "#": "Provides PipelineElement inputs / outputs value inspection",
+      "parameters": {
+        "enable": true,
+        "#": "true or false",
+        "inspect": "(*)",
+        "#": "inputs / outputs names",
+        "target": "print",
+        "#": "file:, log or print"
+      },
+      "input": [],
+      "output": [],
+      "deploy": {
+        "local": {
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    },
+    {
+      "name": "PE_Metrics",
+      "#": "Provides Pipeline and PipelineElement timing information",
+      "parameters": {
+        "enable": true,
+        "rate": 1
+      },
+      "input": [],
+      "output": [
+        {
+          "name": "metrics",
+          "type": "dict"
+        }
+      ],
+      "deploy": {
+        "local": {
+          "module": "aiko_services.examples.pipeline.elements"
+        }
+      }
+    }
+  ]
+}
