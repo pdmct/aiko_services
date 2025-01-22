@@ -27,7 +27,6 @@
 import base64
 from io import BytesIO
 import numpy as np
-import time
 from typing import Tuple
 
 import aiko_services as aiko
@@ -46,27 +45,35 @@ def _all_outputs(pipeline_element, stream):
 
 # --------------------------------------------------------------------------- #
 
-def _all_tools(pipeline_element, stream):
-    """ this function returns all of the tools that are available as a PipelineElemens in the pipeline definition
-    
+def _all_options(pipeline_element, stream):
+    """ this function returns all of the options
     There doesn't seem to be a way to directly access the pipeline_definiton from the pipeline element
     -- can do this via the context object that is passed to the pipeline element init method (but this isn't saved)
     -- the pipeline_defintion_path is saved so might be able to reparse the file and create a new definition object
     is this the best way to do this?
 
-    Tool element is defined as as a PipelineElement with a parameter called "tool"
+    Option element is defined as as a PipelineElement with a parameter given by the selector value in the PE_SELECT element
+    This defaults to "option" but can be changed to any value
     
     """
-    tools = []
+
+    def get_selector(pipeline_definition):
+        for element in pipeline_definition.elements:
+            if element.deploy.class_name == "PE_SELECT":
+                selector = element.parameters.get("selector", "option")
+                return selector
+        return "option"
+    
+    options = []
     
     pipeline_definition = pipeline_element.pipeline.definition
+    selector = get_selector(pipeline_definition)
 
     for element in pipeline_definition.elements:
-        if "tool" in element.parameters:            
-            tool_name = element.name
-            tools.append(tool_name)
-    return tools
-
+        if selector in element.parameters:            
+            option_name = element.name
+            options.append(option_name)
+    return options
 
 import time
 
@@ -337,51 +344,51 @@ class PE_SELECT(aiko.PipelineElement):
         
 
     def process_frame(self, stream, text_b) -> Tuple[aiko.StreamEvent, dict]:
-        # this creates a frame for each tool with the frame data from the current frame
+        # this creates a frame for each option with the frame data from the current frame
 
-        # try to discover the tools that are available in the pipeline
-        available_tools = _all_tools(self, stream)
-        self.logger.info(f"{self.my_id()} available tools: {available_tools}")
+        # try to discover the options that are available in the pipeline
+        options = _all_options(self, stream)
+        self.logger.info(f"{self.my_id()} available options: {options}")
 
-        # get the step that each of the tools should then go to, again a parameter to this select
+        # get the step that each of the options should then go to, again a parameter to this select
         next_step, _ = self.get_parameter("next_step", default="PE_OUT_0")
 
-        selection = [tool for tool in available_tools if random.random() > 0.5]
-        self.logger.info(f"{self.my_id()} selected tools: {selection}")
-        stream.variables["tool_selection"] = selection
+        selection = [opt for opt in options if random.random() > 0.5]
+        self.logger.info(f"{self.my_id()} selected options: {selection}")
+        stream.variables["option_selection"] = selection
 
-        # create a frame for each tool
-        for tool in selection:
+        # create a frame for each option
+        for option in selection:
             frame_data = {}
-            frame_data["tool"] = tool
+            frame_data["option"] = option
             frame_data["text_b"] = text_b
             frame_data["next_step"] = next_step
-            self.create_frame(stream, frame_data=frame_data, graph_path=tool)
-            self.logger.info(f"{self.my_id()} created frame for {tool} with framedata: {frame_data}")
+            self.create_frame(stream, frame_data=frame_data, graph_path=option)
+            self.logger.info(f"{self.my_id()} created frame for {option} with framedata: {frame_data}")
         
         self.logger.info(f"{self.my_id()} out: {text_b}")
         return aiko.StreamEvent.OKAY, {"text_b": text_b}  
     
-class PE_TOOL(aiko.PipelineElement):
+class PE_OPTION(aiko.PipelineElement):
     def __init__(self, context):
-        context.set_protocol("tool:0")
+        context.set_protocol("option:0")
         context.get_implementation("PipelineElement").__init__(self, context)
 
     def process_frame(self, stream, text_b) -> Tuple[aiko.StreamEvent, dict]:
         frame = stream.frames[stream.frame_id]
         # put the results into the stream variable
-        if "tool" not in stream.variables:
-            stream.variables["tool"] = {}
+        if "option" not in stream.variables:
+            stream.variables["option"] = {}
 
         # simulate some processing time
         time.sleep(random.randint(1, 10))
         
-        out_c = f"{frame.swag['tool']}:{text_b}:out"
-        stream.variables["tool"][frame.swag["tool"]] = out_c
+        out_c = f"{frame.swag['option']}:{text_b}:out"
+        stream.variables["option"][frame.swag["option"]] = out_c
 
         # create a new frame to pass back to final element
-        self.logger.debug(f"CREATING NEXT STEP FRAME FOR {frame.swag['tool']}")
-        self.logger.debug(f"stream variables['tool']: {stream.variables['tool']}")
+        self.logger.debug(f"CREATING NEXT STEP FRAME FOR {frame.swag['option']}")
+        self.logger.debug(f"stream variables['option']: {stream.variables['option']}")
         self.create_frame(stream, frame_data=frame.swag, graph_path=frame.swag["next_step"])
 
         self.logger.info(f"{self.my_id()} out: {out_c}")
@@ -395,23 +402,23 @@ class PE_DYNAMIC_OUT(aiko.PipelineElement):
         context.get_implementation("PipelineElement").__init__(self, context)
 
     def process_frame(self, stream, text_b, out_c) -> Tuple[aiko.StreamEvent, dict]:
-        tools = stream.variables["tool_selection"]
-        self.logger.info(f"PE_OUT: out_c: {out_c}")
+        options = stream.variables["option_selection"]
+        self.logger.info(f"PE_DYNAMIC_OUT: out_c: {out_c}")
 
-        # add the check for the tool completion variable
-        if "tool_completion" not in stream.variables:
-            stream.variables["tool_completion"] = {}
+        # add the check for the option completion variable
+        if "option_completion" not in stream.variables:
+            stream.variables["option_completion"] = {}
             
-        tool_results = stream.variables["tool"]
+        option_results = stream.variables["option"]
 
         # simply compare two list to see if they are the same
-        if len(set(tools).difference(set(tool_results.keys()))) == 0:
-            stream.variables["tool_completion"] = True
-            self.logger.info(f"{self.my_id()} ALL tools completed out: {tool_results}")
+        if len(set(options).difference(set(option_results.keys()))) == 0:
+            stream.variables["option_completion"] = True
+            self.logger.info(f"{self.my_id()} ALL options completed out: {option_results}")
         else:
-            self.logger.info(f"{self.my_id()} NOT all tools have completed: {tool_results} ")
+            self.logger.info(f"{self.my_id()} NOT all options have completed: {option_results} ")
         
-        self.logger.info(f"OUT_FINAL: {self.my_id()} out: {stream.variables['tool']}")
+        self.logger.info(f"OUT_FINAL: {self.my_id()} out: {stream.variables['option']}")
         return aiko.StreamEvent.OKAY, {}
 
 # --------------------------------------------------------------------------- #
