@@ -55,7 +55,7 @@ class PE_Add(aiko.PipelineElement):
         constant, _ = self.get_parameter("constant", default=1)
         i_new = int(i) + int(constant)
 
-        self.logger.info(f"{self.my_id()} i in: {i}, out: {i_new}")
+        self.logger.info(f"Local: {self.my_id()} i in: {i}, out: {i_new}")
 
         delay, _ = self.get_parameter("delay", default=0)  # seconds
         if delay:
@@ -63,6 +63,22 @@ class PE_Add(aiko.PipelineElement):
 
         return aiko.StreamEvent.OKAY, {"i": i_new}
 
+
+class PE_Add_2(aiko.PipelineElement):
+    def __init__(self, context):
+        context.set_protocol("add_2:0")
+        context.get_implementation("PipelineElement").__init__(self, context)
+
+    def process_frame(self, stream, i, j) -> Tuple[aiko.StreamEvent, dict]:
+        k = int(i) + int(j)
+
+        self.logger.info(f"{self.my_id()} i in: {i}, j in {j} out: {k}")
+
+        delay, _ = self.get_parameter("delay", default=0)  # seconds
+        if delay:
+            time.sleep(float(delay))
+
+        return aiko.StreamEvent.OKAY, {"k": k}
 # --------------------------------------------------------------------------- #
 
 class PE_Inspect(aiko.PipelineElement):
