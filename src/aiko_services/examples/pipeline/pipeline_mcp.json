@@ -1,6 +1,6 @@
 {
   "version": 0,
-  "name":    "p_example",
+  "name":    "p_mcp",
   "runtime": "python",
 
   "graph": ["(PE_Add_2)"],
@@ -12,16 +12,6 @@
   },
 
   "elements": [
-    { "name":   "PE_Add",
-      "parameters": { "tool": "true",
-                      "description": "Add a constant to the input"},
-      "input":  [{ "name": "i", "type": "int" }],
-      "output": [{ "name": "i", "type": "int" }],
-      "deploy": {
-        "local": { "module": "aiko_services.examples.pipeline.elements"
-         }
-      }
-    },
     { "name":   "PE_Add_2",
       "parameters": { "tool": "true",
                       "description": "Add a two values together"},
