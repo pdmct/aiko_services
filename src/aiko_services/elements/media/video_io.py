@@ -1,26 +1,26 @@
 # Usage: File
 # ~~~~~~~~~~~
-# aiko_pipeline create video_pipeline_0.json -s 1 -sr -ll debug
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1 -sr -ll debug
 #
-# aiko_pipeline create video_pipeline_0.json -s 1 -p rate 4.0
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1 -p rate 4.0
 #
-# aiko_pipeline create video_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1  \
 #   -p VideoReadFile.data_batch_size 8
 #
-# aiko_pipeline create video_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1  \
 #   -p VideoReadFile.data_sources file://data_in/in_{}.mp4
 #
-# aiko_pipeline create video_pipeline_0.json -s 1  \
-#     -p VideoWriteFile.path "file://data_out/out_{:02d}.mp4"
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1  \
+#   -p VideoWriteFile.path "file://data_out/out_{:02d}.mp4"
 #
-# aiko_pipeline create video_pipeline_0.json -s 1           \
-#   -p VideoReadFile.data_sources file://data_in/in_00.mp4  \
-#   -p ImageResize.resolution 320x240                       \
+# aiko_pipeline create pipelines/video_pipeline_0.json -s 1  \
+#   -p VideoReadFile.data_sources file://data_in/in_00.mp4   \
+#   -p ImageResize.resolution 320x240                        \
 #   -p VideoWriteFile.data_targets file://data_out/out_00.mp4
 #
 # Drop frame test
 # ~~~~~~~~~~~~~~~
-# aiko_pipeline create video_pipeline_1.json -s 1 -ll debug
+# aiko_pipeline create pipelines/video_pipeline_1.json -s 1 -ll debug
 #
 # To Do
 # ~~~~~
@@ -60,7 +60,6 @@ from typing import Tuple
 from pathlib import Path
 
 import aiko_services as aiko
-from aiko_services.elements.media import DataSource, DataTarget
 
 __all__ = [
     "VideoOutput", "VideoReadFile", "VideoSample", "VideoShow", "VideoWriteFile"
@@ -111,7 +110,7 @@ class VideoOutput(aiko.PipelineElement):
 #
 # Note: Only supports Streams with "data_sources" parameter
 
-class VideoReadFile(DataSource):  # common_io.py PipelineElement
+class VideoReadFile(aiko.DataSource):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("video_read_file:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -244,7 +243,7 @@ class VideoShow(aiko.PipelineElement):
 #
 # Note: Only supports Streams with "data_targets" parameters
 
-class VideoWriteFile(DataTarget):  # common_io.py PipelineElement
+class VideoWriteFile(aiko.DataTarget):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("video_write_file:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -282,7 +281,8 @@ class VideoWriteFile(DataTarget):  # common_io.py PipelineElement
         parent_path = Path(path).parent
         parent_path.mkdir(exist_ok=True, parents=True)
         path = str(path)
-        video_writer = cv2.VideoWriter(path, format, frame_rate, resolution)
+        video_writer = cv2.VideoWriter(
+            path, format, float(frame_rate), resolution)
         return video_writer
 
     def process_frame(self, stream, images) -> Tuple[aiko.StreamEvent, dict]:

@@ -5,22 +5,22 @@
 #
 # Usage
 # ~~~~~
-# aiko_pipeline create audio_pipeline_0.json -s 1 -sr -ll debug
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1 -sr -ll debug
 #
-# aiko_pipeline create audio_pipeline_0.json -s 1 -p rate ?????
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1 -p rate ?????
 #
-# aiko_pipeline create audio_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1  \
 #   -p AudioReadFile.data_batch_size 8
 #
-# aiko_pipeline create audio_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1  \
 #   -p AudioReadFile.data_sources file://data_in/in_{}.mp3
 #
-# aiko_pipeline create audio_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1  \
 #   -p AudioWriteFile.path "file://data_out/out_{:02d}.mp3"
 #
-# aiko_pipeline create audio_pipeline_0.json -s 1           \
-#   sp AudioReadFile.data_sources file://data_in/in_00.mp3  \
-#   sp AudioResample.rate ?????                             \
+# aiko_pipeline create pipelines/audio_pipeline_0.json -s 1  \
+#   sp AudioReadFile.data_sources file://data_in/in_00.mp3   \
+#   sp AudioResample.rate ?????                              \
 #   sp AudioWriteFile.data_targets file://data_out/out_00.mp3
 #
 # Resources
@@ -38,7 +38,6 @@ from typing import Tuple
 from pathlib import Path
 
 import aiko_services as aiko
-from aiko_services.elements.media import DataSource, DataTarget
 
 __all__ = ["AudioOutput", "AudioReadFile", "AudioWriteFile"]
 
@@ -93,7 +92,7 @@ class AudioOutput(aiko.PipelineElement):
 #
 # Note: Only supports Streams with "data_sources" parameter
 
-class AudioReadFile(DataSource):  # common_io.py PipelineElement
+class AudioReadFile(aiko.DataSource):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("audio_read_file:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -498,7 +497,7 @@ class PE_MicrophoneSD(PipelineElement):
             _LOGGER.error(f"SoundDevice error: {status}")
         else:
         #   _LOGGER.debug(f"SoundDevice callback: {len(indata)} bytes")
-            if self._time_mute == 0 or time.time() > self._time_mute:
+            if self._time_mute == 0 or time.monotonic() > self._time_mute:
                 if self._time_mute:
                     self._time_mute = 0
                     self.ec_producer.update("mute", 0)
@@ -514,7 +513,7 @@ class PE_MicrophoneSD(PipelineElement):
 
     def mute(self, duration):
         duration = parse_number(duration)
-        time_mute = time.time() + duration
+        time_mute = time.monotonic() + duration
         if duration == 0 or time_mute >= self._time_mute:
             self._audio_sample = np.empty((0, 1), dtype=np.float32)
             self._time_mute = time_mute
@@ -529,77 +528,6 @@ class PE_MicrophoneSD(PipelineElement):
         _LOGGER.debug(f"{self.my_id()}: stop_stream()")
         self.terminate = True
         return aiko.StreamEvent.OKAY, {}
-
-# --------------------------------------------------------------------------- #
-
-TOPIC_AUDIO = f"{get_namespace()}/audio"
-
-class PE_RemoteReceive0(PipelineElement):
-    def __init__(self, context):
-        context.set_protocol("remote_receive:0")
-        context.get_implementation("PipelineElement").__init__(self, context)
-
-        self.share["frame_id"] = 0
-        self.share["topic_audio"] = f"{TOPIC_AUDIO}/{self.name[-1]}"
-        self.add_message_handler(
-            self._audio_receive, self.share["topic_audio"], binary=True)
-
-    def _audio_receive(self, aiko, topic, payload_in):
-        parameter_name = "audio"
-        if self.__class__.__name__ == "PE_RemoteReceive2":
-            parameter_name = "text"
-        payload_in = zlib.decompress(payload_in)
-        payload_in = BytesIO(payload_in)
-        if False:
-            buffer = payload_in.getbuffer()
-            digest = md5(buffer).hexdigest()
-            _LOGGER.debug(f"payload_in: len: {len(buffer)}, md5: {digest}")
-        audio_sample = np.load(payload_in, allow_pickle=True)
-        frame_id = self.share["frame_id"]
-        self.ec_producer.update("frame_id", frame_id + 1)
-        stream = {"stream_id": 0, "frame_id": frame_id}
-        self.create_frame(stream, {parameter_name: audio_sample})
-
-    def process_frame(self, stream, audio) -> Tuple[aiko.StreamEvent, dict]:
-        return aiko.StreamEvent.OKAY, {"audio": audio}
-
-class PE_RemoteReceive1(PE_RemoteReceive0):
-    pass
-
-class PE_RemoteReceive2(PE_RemoteReceive0):
-    def process_frame(self, stream, text) -> Tuple[aiko.StreamEvent, dict]:
-        text = str(text)
-        if not text:
-            text = None
-        return aiko.StreamEvent.OKAY, {"text": text}
-
-# --------------------------------------------------------------------------- #
-
-class PE_RemoteSend0(PipelineElement):
-    def __init__(self, context):
-        context.set_protocol("remote_send:0")
-        context.get_implementation("PipelineElement").__init__(self, context)
-
-        self.share["topic_audio"] = f"{TOPIC_AUDIO}/{self.name[-1]}"
-
-    def process_frame(self, stream, audio) -> Tuple[aiko.StreamEvent, dict]:
-        payload_out = BytesIO()
-        np.save(payload_out, audio, allow_pickle=True)
-        if False:
-            buffer = payload_out.getbuffer()
-            digest = md5(buffer).hexdigest()
-            _LOGGER.debug(f"{self.my_id()}, len: {len(buffer)}, md5: {digest}")
-        payload_out = zlib.compress(payload_out.getvalue())
-        aiko.message.publish(self.share["topic_audio"], payload_out)
-        return aiko.StreamEvent.OKAY, {}
-
-class PE_RemoteSend1(PE_RemoteSend0):
-    def process_frame(self, stream, text) -> Tuple[aiko.StreamEvent, dict]:
-        super().process_frame(stream, text)
-        return aiko.StreamEvent.OKAY, {}
-
-class PE_RemoteSend2(PE_RemoteSend1):
-    pass
 
 # --------------------------------------------------------------------------- #
 

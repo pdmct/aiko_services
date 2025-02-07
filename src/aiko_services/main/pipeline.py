@@ -285,7 +285,7 @@ class PipelineGraph(Graph):
                     if strict and input["found"] != 1:
                         diagnostic += "immediate predecessor PipelineElement"
                         try_map_in_out = True
-                    #   print(f"{diagnostic}")  # TODO: Ensure this is right
+                    #   self.logger.debug(f"{diagnostic}")  # TODO: Verify
                     elif input["found"] == 0:
                         diagnostic += "previous PipelineElements"
                         try_map_in_out = True
@@ -295,8 +295,7 @@ class PipelineGraph(Graph):
                         if not self.validate_mapping(
                             map_in_nodes, element_name, input):
                             pass
-                        #   print(f"{diagnostic}")  # TODO: Ensure this is right
-
+                        #   self.logger.debug(f"{diagnostic}")  # TODO: Verify
             for successor_name in node.successors:
                 successor = self.get_node(successor_name)
                 successor.predecessors[element_name] = node
@@ -408,15 +407,22 @@ class PipelineElementImpl(PipelineElement):
                 "_create_frames_generator()", stream.stream_id, frame_id)
             stream, frame_id = self.get_stream()
 
-        # TODO: 2024-12-11: Throttle "frame_generator" when "rate" is None
             mailbox_name = f"{self.pipeline.name}/1/in"
-            mailbox_queue = event.mailboxes[mailbox_name].queue
+            mailbox_queue = None
+            period_counter = 0
+            start_time = time.monotonic()
 
             while stream.state == StreamState.RUN:
             # TODO: 2024-12-11: Throttle "frame_generator" when "rate" is None
-                if (not rate or rate == 0) and mailbox_queue.qsize() >= 32:
-                    time.sleep(0.02)  # 50 Hz check
-                    continue
+            # TODO: Create "event.py:get_mailbox_queue()", "size" and "throttle"
+                if not rate or rate == 0:
+                    if mailbox_queue:
+                        if mailbox_queue.qsize() >= 32:
+                            time.sleep(0.02)  # 50 Hz check
+                            continue
+            # TODO: Find cases when Pipeline "in" mailbox doesn't exist yet
+                    elif mailbox_name in event.mailboxes:
+                        mailbox_queue = event.mailboxes[mailbox_name].queue
 
                 stream.lock.acquire("_create_frames_generator()")
                 try:
@@ -429,7 +435,9 @@ class PipelineElementImpl(PipelineElement):
                     frame_data = {"diagnostic": traceback.format_exc()}
 
                 stream.set_state(self.pipeline._process_stream_event(
-                    self.name, stream_event, frame_data))
+                    self.name, stream, stream_event, frame_data))
+                if stream.state == StreamState.ERROR:
+                    break
 
                 if stream.state == StreamState.RUN and frame_data:
                     graph_path, _ = self.get_parameter("_graph_path_", None)
@@ -451,9 +459,17 @@ class PipelineElementImpl(PipelineElement):
                 stream.lock.release()
 
                 if rate and stream.state == StreamState.RUN:
-                    time.sleep(1.0 / rate)
+                # TODO: When "rate" parameter updates, then fix "period_time"
+                    period_counter += 1
+                    period_time = period_counter * (1.0 / rate)
+                    duration = period_time + start_time - time.monotonic()
+                    if duration > 0:
+                        time.sleep(duration)
                 elif stream_event == StreamEvent.NO_FRAME:
                     time.sleep(0.02)  # Avoid frame_generator() busy CPU loop
+        except Exception as exception:
+            self.logger.error("PipelineImpl._create_frames_generator(): "  \
+                             f"{traceback.format_exc()}")
         finally:
             self.pipeline._disable_thread_local("_create_frames_generator()")
 
@@ -568,9 +584,9 @@ class PipelineImpl(Pipeline):
     def __init__(self, context):
         self.DEBUG = {}                                     # DEBUG: 2024-12-02
 
-        self.actor = context.get_implementation("Actor")  # _WINDOWS
+        self.actor = context.get_implementation("Actor")    # _WINDOWS
         context.get_implementation("PipelineElement").__init__(self, context)
-        print(f"MQTT topic: {self.topic_in}")
+        self.logger.info(f"MQTT topic: {self.topic_in}")
 
         self.share["definition_pathname"] = context.definition_pathname
         self.share["lifecycle"] = "waiting"
@@ -592,15 +608,19 @@ class PipelineImpl(Pipeline):
         self.share["element_count"] = self.pipeline_graph.element_count
         self.share["streams"] = 0
         self.share["streams_frames"] = 0
+
+        global _WINDOWS
+        _WINDOWS, _ = self.get_parameter("sliding_windows", _WINDOWS)
         self.share["sliding_windows"] = _WINDOWS
+
         self._update_lifecycle_state()
 
     # TODO: Better visualization of the Pipeline / PipelineElements details
         if False:
-            print(f"Pipeline graph path ...")
+            self.logger.info(f"Pipeline graph path ...")
             graph_path = self.pipeline_graph.get_path(self.share["graph_path"])
             for node in graph_path:
-                print(f"    PipelineElement: {node.name}")
+                self.logger.info(f"    PipelineElement: {node.name}")
 
         event.add_timer_handler(self._status_update_timer, 3.0)
 
@@ -680,7 +700,10 @@ class PipelineImpl(Pipeline):
     @classmethod
     def create_pipeline(cls, definition_pathname, pipeline_definition,
         name, graph_path, stream_id, parameters, frame_id, frame_data,
-        grace_time, queue_response=None, stream_reset=False):
+        grace_time, queue_response=None, stream_reset=False, windows=False):
+
+        global _WINDOWS
+        _WINDOWS = windows
 
         name = name if name else pipeline_definition.name
 
@@ -733,8 +756,8 @@ class PipelineImpl(Pipeline):
             element_instance = None
             element_name = pipeline_element_definition.name
             if element_name not in node_successors:
-                print(f'Warning: Skipping PipelineElement {element_name}: '
-                      f'Not used within the "graph" definition')
+                self.logger.warning(f'Skipping PipelineElement {element_name}: '
+                                    f'Not used within the "graph" definition')
                 continue
             deploy_definition = pipeline_element_definition.deploy
             deploy_type_name = type(deploy_definition).__name__
@@ -853,7 +876,9 @@ class PipelineImpl(Pipeline):
                         diagnostic = {"diagnostic": traceback.format_exc()}
 
                     stream.set_state(self._process_stream_event(
-                        element_name, stream_event, diagnostic))
+                        element_name, stream, stream_event, diagnostic))
+                    if stream.state == StreamState.ERROR:
+                        break
                 else:  ## Remote element ##
                     # TODO: Consider using "topic_response=self.topic_control"
                     if _WINDOWS:
@@ -924,8 +949,11 @@ class PipelineImpl(Pipeline):
                         stream_event = StreamEvent.ERROR
                         diagnostic = {"diagnostic": traceback.format_exc()}
 
-                    stream.set_state(self._process_stream_event(element_name,
-                        stream_event, diagnostic, in_destroy_stream=True))
+                    stream.set_state(self._process_stream_event(
+                        element_name, stream, stream_event, diagnostic,
+                        in_destroy_stream=True))
+                    if stream.state == StreamState.ERROR:
+                        break
         finally:
             if use_thread_local:
                 stream.lock.release()
@@ -1170,7 +1198,10 @@ class PipelineImpl(Pipeline):
                                 "diagnostic": traceback.format_exc()}
 
                         stream.set_state(self._process_stream_event(
-                            element_name, stream_event, frame_data_out))
+                            element_name, stream, stream_event,
+                            frame_data_out))
+                        if stream.state == StreamState.ERROR:
+                            break
                     #   TODO: Test "stream.state" before continuing
                         self._process_map_out(element_name, frame_data_out)
                         self._process_metrics_capture(  # TODO: Move up ?
@@ -1183,7 +1214,8 @@ class PipelineImpl(Pipeline):
                                      "remote Pipeline hasn't been discovered"
                             }
                             stream.set_state(self._process_stream_event(
-                                element_name, StreamEvent.ERROR, diagnostic))
+                                element_name, stream, StreamEvent.ERROR,
+                                diagnostic))
                         else:
                             frame_complete = False
                             frame_data_out = {}
@@ -1306,7 +1338,7 @@ class PipelineImpl(Pipeline):
         if metrics == {}:
             metrics["frame"] = {}  # frame start metrics
             metrics["elements"] = {}
-            metrics["pipeline_start_time"] = time.time()
+            metrics["pipeline_start_time"] = time.monotonic()
             if _METRICS_MEMORY_ENABLE:
                 memory_rss = psutil.Process().memory_info().rss
                 metrics["pipeline_start_memory"] = memory_rss
@@ -1315,16 +1347,16 @@ class PipelineImpl(Pipeline):
 # For each PipelineElement
     def _process_metrics_start(self, metrics):
         metrics["start"] = {}  # PipelineElement start metrics
-        metrics["start"]["time"] = time.time()
+        metrics["start"]["time"] = time.monotonic()
         if _METRICS_MEMORY_ENABLE:
             memory_rss = psutil.Process().memory_info().rss
             metrics["start"]["memory"] = memory_rss
 
 # For each PipelineElement
     def _process_metrics_capture(self, metrics, element_name):
-        time_element = time.time() - metrics["start"]["time"]
+        time_element = time.monotonic() - metrics["start"]["time"]
         metrics["elements"][f"{element_name}_time"] = time_element
-        pipeline_time = time.time() - metrics["pipeline_start_time"]
+        pipeline_time = time.monotonic() - metrics["pipeline_start_time"]
         metrics["pipeline_time"] = pipeline_time  # Total so far !
         if _METRICS_MEMORY_ENABLE:
             memory_rss = psutil.Process().memory_info().rss
@@ -1378,7 +1410,8 @@ class PipelineImpl(Pipeline):
 # TODO: - _process_frame_common()
 # TODO: - destroy_stream()
 
-    def _process_stream_event(self, element_name, stream_event, diagnostic,
+    def _process_stream_event(self,
+        element_name, stream, stream_event, diagnostic,
         in_destroy_stream=False):
 
         def get_diagnostic(diagnostic):
@@ -1413,6 +1446,8 @@ class PipelineImpl(Pipeline):
             stream_state = StreamState.ERROR
             self.logger.error(get_diagnostic(diagnostic))
             if not in_destroy_stream:  # avoid destroy_stream() recursion
+                if stream.lock._in_use:
+                    stream.lock.release()
                 self.destroy_stream(get_stream_id(), use_thread_local=False)
 
         return stream_state
@@ -1661,10 +1696,6 @@ def create(definition_pathname, graph_path, name, parameters, stream_id,
     frame_id, frame_data, grace_time, show_response,
     log_level, log_mqtt, stream_reset, windows, exit_message):
 
-    global _WINDOWS
-    if windows:
-        _WINDOWS = True
-
     if stream_id:
         stream_id = stream_id.replace("{}", get_pid())  # sort-of unique id
 
@@ -1699,7 +1730,7 @@ def create(definition_pathname, graph_path, name, parameters, stream_id,
         definition_pathname, pipeline_definition,
         name, graph_path, stream_id, parameters, frame_id, frame_data,
         grace_time, queue_response=queue_pipeline_response,
-        stream_reset=stream_reset)
+        stream_reset=stream_reset, windows=windows)
 
     pipeline.run(mqtt_connection_required=False)
     if exit_message:
@@ -1716,12 +1747,12 @@ def destroy(name):
             topic_path = f"{service_details[0]}/in"
             actor = get_actor_mqtt(topic_path, Pipeline)
             actor.stop()
-            print(f'Destroyed Pipeline "{name}"')
+            _LOGGER.info(f'Destroyed Pipeline "{name}"')
             aiko.process.terminate()
 
     def waiting_timer():
         event.remove_timer_handler(waiting_timer)
-        print(f'Waiting to discover Pipeline "{name}"')
+        _LOGGER.info(f'Waiting to discover Pipeline "{name}"')
 
     actor_discovery = ActorDiscovery(aiko.process)
     service_filter = ServiceFilter("*", name, "*", "*", "*", "*")

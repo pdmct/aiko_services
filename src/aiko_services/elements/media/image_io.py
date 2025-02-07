@@ -1,32 +1,34 @@
 # Usage: File
 # ~~~~~~~~~~~
-# aiko_pipeline create image_pipeline_0.json -s 1 -sr -ll debug
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1 -sr -ll debug
 #
-# aiko_pipeline create image_pipeline_0.json -s 1 -p rate 1.0
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1 -p rate 1.0
 #
-# aiko_pipeline create image_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1  \
 #   -p ImageReadFile.data_batch_size 8
 #
-# aiko_pipeline create image_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1  \
 #   -p ImageReadFile.data_sources file://data_in/in_{}.jpeg
 #
-# aiko_pipeline create image_pipeline_0.json -s 1  \
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1  \
 #   -p ImageWriteFile.path "file://data_out/out_{:02d}.jpeg"
 #
-# aiko_pipeline create image_pipeline_0.json -s 1            \
+# aiko_pipeline create pipelines/image_pipeline_0.json -s 1  \
 #   -p ImageReadFile.data_sources file://data_in/in_00.jpeg  \
 #   -p ImageResize.resolution 320x240                        \
 #   -p ImageWriteFile.data_targets file://data_out/out_00.jpeg
 #
-# aiko_pipeline create image_pipeline_1.json -s 1
+# aiko_pipeline create pipelines/image_pipeline_1.json -s 1
 #
 # Usage: ZMQ
 # ~~~~~~~~~~
-# aiko_pipeline create image_zmq_pipeline_0.json -s 1 -sr -ll debug -gt 10
-# aiko_pipeline create image_zmq_pipeline_0.json -s 1 -sr  \
+# aiko_pipeline create pipelines/image_zmq_pipeline_0.json -s 1 -sr  \
+#            -ll debug -gt 10
+# aiko_pipeline create pipelines/image_zmq_pipeline_0.json -s 1 -sr  \
 #            -p ImageReadZMQ.data_sources zmq://0.0.0.0:6502
 #
-# aiko_pipeline create image_zmq_pipeline_1.json -s 1 -sr -ll debug  \
+# aiko_pipeline create pipelines/image_zmq_pipeline_1.json -s 1 -sr  \
+#            -ll debug                                               \
 #            -p ImageReadFile.rate 2.0                               \
 #            -p ImageWriteZMQ.data_targets zmq://192.168.0.1:6502
 #
@@ -64,7 +66,6 @@ from typing import Tuple
 import zlib
 
 import aiko_services as aiko
-from aiko_services.elements.media import DataSource, DataTarget
 
 __all__ = [
     "convert_image_to_numpy", "convert_image_to_pil",
@@ -274,7 +275,7 @@ class ImageOverlayFilter(aiko.PipelineElement):
 #
 # Note: Only supports Streams with "data_sources" parameter
 
-class ImageReadFile(DataSource):  # common_io.py PipelineElement
+class ImageReadFile(aiko.DataSource):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("image_read_file:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -297,13 +298,13 @@ class ImageReadFile(DataSource):  # common_io.py PipelineElement
 # - ImageWriteZMQ(DataTarget) ZMQ client --> ImageReadZMQ(DataSource) ZMQ server
 #   - Individual image records produced by ZMQ client and consumed by ZMQ server
 #
-# parameter: "data_sources" is the ZMQ server bind details (common_io_zmq.py)
+# parameter: "data_sources" is the ZMQ server bind details (scheme_zmq.py)
 #            "media_type" is either "numpy" or "pil"
 #            "compressed" (boolean) indicated whether to decompress the payload
 #
 # Note: Only supports Streams with "data_sources" parameter
 
-class ImageReadZMQ(DataSource):  # common_io.py PipelineElement
+class ImageReadZMQ(aiko.DataSource):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("image_read_zmq:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -368,7 +369,7 @@ class ImageResize(aiko.PipelineElement):
 #
 # Note: Only supports Streams with "data_targets" parameter
 
-class ImageWriteFile(DataTarget):  # common_io.py PipelineElement
+class ImageWriteFile(aiko.DataTarget):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("image_write_file:0")
         context.get_implementation("PipelineElement").__init__(self, context)
@@ -398,12 +399,12 @@ class ImageWriteFile(DataTarget):  # common_io.py PipelineElement
 # - ImageWriteZMQ(DataTarget) ZMQ client --> ImageReadZMQ(DataSource) ZMQ server
 #   - Individual image records produced by ZMQ client and consumed by ZMQ server
 #
-# parameter: "data_targets" is the ZMQ connect details (common_io_zmq.oy)
+# parameter: "data_targets" is the ZMQ connect details (scheme_zmq.py)
 #            "compressed" (boolean) indicated whether to compress the payload
 #
 # Note: Only supports Streams with "data_targets" parameter
 
-class ImageWriteZMQ(DataTarget):  # common_io.py PipelineElement
+class ImageWriteZMQ(aiko.DataTarget):  # PipelineElement
     def __init__(self, context: aiko.ContextPipelineElement):
         context.set_protocol("image_write_zmq:0")
         context.get_implementation("PipelineElement").__init__(self, context)
