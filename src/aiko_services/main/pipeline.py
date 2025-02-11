@@ -350,7 +350,19 @@ class PipelineElement(Actor):
     def stop_stream(self, stream, stream_id):
         pass
 
+
+def trace_hook(logger, actor, topic, command, args):
+    # Modify the arguments or other data as needed
+    logger.info(f"Hook called with actor: {actor}, topic: {topic}, command: {command}, args: {args}")
+    return topic, command, args
+
 class PipelineElementImpl(PipelineElement):
+
+    # give the hook our logger and return a new function that includes it
+    def load_hook(self, hook_fn):
+        from functools import partial
+        return partial(hook_fn, self.logger)
+
     def __init__(self, context):
         self.definition = context.get_definition()
         self.pipeline = context.get_pipeline()
@@ -365,6 +377,10 @@ class PipelineElementImpl(PipelineElement):
             "log_level", self_share_priority=False)
         if found:
             self.logger.setLevel(str(log_level).upper())
+
+        trace_enabled, _ = self.get_parameter("trace_enabled", False)
+        if trace_enabled:
+            context.get_implementation("Actor").add_hook(self.load_hook(trace_hook))
 
         self.share["source_file"] = f"v{_VERSION}⇒ {__file__}"
         self.share.update(self.definition.parameters)
