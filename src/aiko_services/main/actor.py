@@ -175,6 +175,12 @@ class ActorTopic:
 class Actor(Service):
     Interface.default("Actor", "aiko_services.main.actor.ActorImpl")
 
+    hooks = []  # List to store pre post message hooks
+
+    @classmethod
+    def add_hook(cls, hook_function):
+        cls.hooks.append(hook_function)
+
     @abstractmethod
     def run(self, mqtt_connection_required=True):
         pass
@@ -228,6 +234,11 @@ class ActorImpl(Actor):
 
     def _post_message(
         self, topic, command, args, delay=None, target_function=None):
+
+        # Call all hooks in sequence, allowing them to modify the data
+        for hook in Actor.hooks:
+            topic, command, args = hook(self, topic, command, args)
+
 
         target_object = self
         message = Message(
