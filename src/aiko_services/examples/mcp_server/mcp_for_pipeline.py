@@ -1,6 +1,6 @@
 ## example that creates an MCP server that creates a pipeline and
 ## then responds to requests to call the pipeline
-import re
+import click
 import sys
 import os
 import logging
@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 import functools
 import inspect
 
-import httpx
 from mcp.server.fastmcp import FastMCP
 
 import aiko_services as aiko
@@ -24,13 +23,10 @@ mcp = FastMCP("aiko_pipeline_server")
 
 # Constants
 PIPELINE_DEFINITION_FILES = "./src/aiko_services/examples/pipeline"
-PIPELINE_DEFINITION = "pipeline_mcp.json"
-PIPELINE_QUEUE_TIMEOUT = 10
+PIPELINE_DEFINITION = "pipeline_paths.json"
+PIPELINE_QUEUE_TIMEOUT = 300
 
-DEFAULT_STREAM_ID = 1
-# globals
-frame_id = 0
-stream_id = DEFAULT_STREAM_ID
+DEFAULT_STREAM_ID = "*"  # Default stream_id for the pipeline
 
 
 class Assistant:
@@ -47,7 +43,7 @@ class Assistant:
             parameters={},
             frame_id=0,
             frame_data={},
-            grace_time=300,
+            grace_time=PIPELINE_QUEUE_TIMEOUT,
             queue_response=self.queue,
         )
         run_args = {"mqtt_connection_required": False}
@@ -96,9 +92,6 @@ class Assistant:
                 grace_time=300,
                 queue_response=self.queue,
             )
-
-
-
             # Frame data setup and queue processing
             frame_data = kwargs if kwargs else {}
             self.pipeline.create_frame(stream, frame_data)
@@ -115,7 +108,7 @@ class Assistant:
         return response
     
     def call_as_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
-        """ Call a tool in the pipeline
+        """ Call a pipeline as a tool with the given arguments
 
         :param tool_name: The name of the tool to call
         :type tool_name: str
@@ -127,12 +120,16 @@ class Assistant:
         # paraneters and args are keys in the kwargs
         parameters = {}
         args = kwargs
-        stream_id = kwargs.get("stream_id", DEFAULT_STREAM_ID)
+        stream_id = kwargs.get("stream_id", DEFAULT_STREAM_ID) 
+        if not stream_id:
+            stream_id = DEFAULT_STREAM_ID
         logger.info(f"Calling tool: {tool_name} with args: {args}")
-        return self.invoke_graph(stream_id=stream_id,
+        result = self.invoke_graph(stream_id=stream_id,
                                  start_node=tool_name,
                                  parameters=parameters,
-                                 kwargs=args)
+                                 kwargs=args)[1]
+        logger.info(f"Tool {tool_name} result: {result}")
+        return result
     
     @staticmethod
     def create_function_with_explicit_kwargs(name, arg_dict, existing_function):
@@ -140,6 +137,11 @@ class Assistant:
         
         # convert the list of dicts into a single dict
         arg_dict = {i['name']: i['default'] if 'default' in i else None for i in arg_dict}
+
+        # Ensure 'stream_id' is always present in the argument dictionary
+        # pipelines have to have a stream_id as an argument or None (it gets DEFAULT_STREAM_ID)
+        arg_dict.setdefault('stream_id', None)
+
 
         args = list(arg_dict.keys())
 
@@ -164,31 +166,31 @@ class Assistant:
 
     
 class AikoMCPServer(FastMCP):
-    def __init__(self, pipeline_definition_pathname: str):
+    def __init__(self, pipeline_definition_pathname: str, tool_name: Optional[str] = None):
         self.assistant = Assistant(self, pipeline_definition_pathname)
         super().__init__("aiko_pipeline_server")
 
         # read the pipeline definition and identify any tools defined
-        # Tools are defined by including a parameter called "tool" in the pipeline definition
+        # Tools are defined by including a parameter called "tool" in the pipeline element definition
+        # ALteratively a tool_name can be passed on the command line and this element will be exposed as a tool
         pipeline_defn = aiko.PipelineImpl.parse_pipeline_definition(self.assistant.pipeline_definition_pathname)
-        print(f"pipelinedefn: {pipeline_defn}")
         self.tools = {}
         for node in pipeline_defn.elements:
-            if "tool" in node.parameters.keys():
+            if "tool" in node.parameters.keys() or node.name == tool_name:
+                logger.info(f"Adding tool: {node.name}")
                 tool_name = node.name
                 self.tools[tool_name] = node
                 tool_args = node.input
                 # add the tool name to the args
                 tool_args.append({"name": "tool_name", "default": tool_name})
                 call_tool_fn = self.assistant.call_as_tool
-                print(f"Adding tool: {tool_name}")
+                logger.info(f"Adding tool: {tool_name}")
                 self.add_tool(Assistant.create_function_with_explicit_kwargs(tool_name, tool_args, call_tool_fn,), 
                               name=tool_name, 
                               description=node.parameters["description"])
 
     def terminate(self):
         self.assistant.terminate()
-        super().terminate()
 
     
     async def call_tool(
@@ -197,7 +199,6 @@ class AikoMCPServer(FastMCP):
         """Call a tool by name with arguments."""
         logger.info(f"Calling tool: {name} with arguments: {arguments}")
         return await super().call_tool(name, arguments)
-
 
 
 def register_signal_handler(mcp_server):
@@ -210,13 +211,19 @@ def register_signal_handler(mcp_server):
 
     return signal_handler
 
-if __name__ == "__main__":
-
+@click.command()
+@click.argument("pfile", type=click.Path(exists=True), required=True)
+@click.option("--tool_name", type=str, help="The name of the PipelineElment to expose as a tool")
+def main(pfile, tool_name=None, **kwargs):
     # Create the MCP server
-    mcp_server = AikoMCPServer(os.path.join(PIPELINE_DEFINITION_FILES, PIPELINE_DEFINITION))
+    mcp_server = AikoMCPServer(pfile, tool_name)
 
     # Register signal handler
     signal_handler = register_signal_handler(mcp_server)
     signal.signal(signal.SIGINT, signal_handler)
 
     mcp_server.run()
+
+
+if __name__ == "__main__":
+    main()

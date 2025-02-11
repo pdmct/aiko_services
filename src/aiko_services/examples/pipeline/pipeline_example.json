@@ -3,7 +3,9 @@
   "name":    "p_example",
   "runtime": "python",
 
-  "graph": ["(PE_RandomIntegers PE_Add (random: i))"],
+  "graph": ["(PE_RandomIntegers PE_Add (random: i))",
+            "(PE_Add)",
+            "(PE_Add_2)"],
 
   "parameters": { "constant": 1,
                   "delay":    0.0,
@@ -20,8 +22,21 @@
       }
     },
     { "name":   "PE_Add",
+      "parameters": { "tool": "true",
+                      "description": "Add a constant to the input"},
       "input":  [{ "name": "i", "type": "int" }],
       "output": [{ "name": "i", "type": "int" }],
+      "deploy": {
+        "local": { "module": "aiko_services.examples.pipeline.elements"
+         }
+      }
+    },
+    { "name":   "PE_Add_2",
+      "parameters": { "tool": "true",
+                      "description": "Add a two values together"},
+      "input":  [{ "name": "i", "type": "int" },
+                 { "name": "j", "type": "int" }],
+      "output": [{ "name": "k", "type": "int" }],
       "deploy": {
         "local": { "module": "aiko_services.examples.pipeline.elements"
          }
