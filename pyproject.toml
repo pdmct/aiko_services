@@ -40,7 +40,7 @@ dependencies = [
     "click~=8.1.7",
     "numpy>=1.26.4",
     "paho-mqtt>=1.6.1,<2.0.0",
-    "Pillow~=10.4.0",
+    "Pillow~=11.0.0",
     "psutil~=6.0.0",
     "pyperclip~=1.9.0",
     "pyzmq~=26.2.0",
@@ -108,5 +108,6 @@ platforms = ["osx-arm64"]
 
 [tool.pixi.pypi-dependencies]
 aiko_services = { path = ".", editable = true }
+smolagents = {version = ">=1.7.0,<2", extras = ["mcp"]}
 
 [tool.pixi.tasks]
