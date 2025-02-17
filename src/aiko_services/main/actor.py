@@ -175,17 +175,37 @@ class ActorTopic:
 class Actor(Service):
     Interface.default("Actor", "aiko_services.main.actor.ActorImpl")
 
-    hooks = []  # List to store pre post message hooks
-
-    @classmethod
-    def add_hook(cls, hook_function):
-        cls.hooks.append(hook_function)
-
     @abstractmethod
     def run(self, mqtt_connection_required=True):
         pass
 
 class ActorImpl(Actor):
+    
+
+    
+    def add_hook(cls, hook_function):
+        """ add_hook() is a class method that allows a hook function to be
+        added to the list of hooks that will be called before each message is
+        posted to the actor's mailbox. The hook function must accept the
+        following arguments: (actor, topic, command, args) and return the
+        modified (topic, command, args) tuple. 
+        
+        The hook function is called in the order that it was added to the list.
+        
+        The return value of add_hook() is the index of the hook function in the
+        list of hooks. This index can be used to remove the hook function from
+        the list using the remove_hook() method."""
+        cls.hooks.append(hook_function)
+        return len(cls.hooks) - 1
+    
+    
+    def remove_hook(cls, index):
+        """ remove_hook() is a class method that allows a hook function to be
+        removed from the list of hooks. The index of the hook function in the
+        list of hooks is passed as an argument to the remove_hook() method."""
+        cls.hooks.pop(index)
+
+
     @classmethod
     def proxy_post_message(
         cls, proxy_name, actual_object, actual_function, *args, **kwargs):
@@ -209,6 +229,8 @@ class ActorImpl(Actor):
         }
         self.ec_producer = ECProducer(self, self.share)
         self.ec_producer.add_handler(self.ec_producer_change_handler)
+
+        self.hooks = []
 
         self.delayed_message_queue = queue.Queue()
         # First mailbox added has priority handling for all posted messages
@@ -238,7 +260,6 @@ class ActorImpl(Actor):
         # Call all hooks in sequence, allowing them to modify the data
         for hook in Actor.hooks:
             topic, command, args = hook(self, topic, command, args)
-
 
         target_object = self
         message = Message(
